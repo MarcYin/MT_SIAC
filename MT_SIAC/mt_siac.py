@@ -1,3 +1,5 @@
+import os
+import sys
 import osr
 import ogr
 import mgrs
@@ -23,6 +25,7 @@ from l8_preprocessing import l8_pre_processing
 from scipy.interpolate import NearestNDInterpolator
 from skimage.morphology import disk, binary_dilation, binary_closing
 procs =  psutil.cpu_count()
+file_path = os.path.dirname(os.path.realpath(__file__))
 
 sites = [i.split('/')[-2] for i in glob('/data/nemesis/acix_2/S2s_30/*/')] 
 
@@ -203,10 +206,6 @@ def read_l8(l8s, pix_res, dstSRS, outputBounds, vrt_dir):
                     scale = float(line.split()[-1])
                 elif 'REFLECTANCE_ADD_BAND' in line:
                     off = float(line.split()[-1])
-                elif 'DATE_ACQUIRED' in line:
-                    date = line.split()[-1]  
-                elif 'SCENE_CENTER_TIME' in line:
-                    time = line.split()[-1]  
         sza    = gdal.Warp('', i.sun_angs, format = 'MEM', outputBounds = outputBounds, dstSRS = dstSRS,
                             xRes = pix_res, yRes = pix_res, resampleAlg = gdal.GRIORA_Average).ReadAsArray()[1] * 0.01
         scale  = scale / np.cos(np.deg2rad(sza))
@@ -318,7 +317,8 @@ def redo_cloud_shadow(s2_toas, l8_toas, s2_clds, l8_clds):
     med_obs = np.ma.median(month_obs, axis = 0) 
     struct = disk(5)                            
     s2_shadows = []                             
-    s2_clouds = []                              
+    s2_clouds  = []                              
+    s2_changes = []
     for _, s2_toa in enumerate(s2_toas):        
         diff = s2_toa.data[[1, 2, 3, 8, 11, 12]] - med_obs  
         vis_diff = diff[:3].mean(axis=0)        
@@ -328,12 +328,14 @@ def redo_cloud_shadow(s2_toas, l8_toas, s2_clds, l8_clds):
         certain_cloud[vis_diff.mask] = (s2_clds[_]>40)[vis_diff.mask]
         nir_diff = diff[3:].mean(axis=0)        
         shadow   = nir_diff < -0.1              
-        shadow   = binary_closing(shadow)       
+        shadow   = binary_closing(shadow) & (~certain_cloud)
         s2_clouds.append(certain_cloud)         
         s2_shadows.append(shadow)               
-     
+        s2_changes.append(diff)
+
     l8_shadows = []                             
-    l8_clouds = []                              
+    l8_clouds  = []     
+    l8_changes = []                         
     for _, l8_toa in enumerate(l8_toas):        
         diff = l8_toa.data[[1, 2, 3, 4, 5, 6]] - med_obs  
      
@@ -346,10 +348,11 @@ def redo_cloud_shadow(s2_toas, l8_toas, s2_clds, l8_clds):
         nir_diff       = diff[3:].mean(axis=0)  
         certain_shadow = (((l8_clds[_] >> 7) & 3) > 1) & (nir_diff < -0.1)
         certain_shadow = binary_dilation(certain_shadow, selem = struct).astype(certain_cloud.dtype) & (nir_diff < -0.025)
-        certain_shadow = binary_closing(certain_shadow)
+        certain_shadow = binary_closing(certain_shadow) & (~certain_cloud)
         l8_clouds.append(certain_cloud)                                                                                                                                   
         l8_shadows.append(certain_shadow) 
-    return s2_clouds, s2_shadows, l8_clouds, l8_shadows
+        l8_changes.append(diff)
+    return s2_clouds, s2_shadows,s2_changes, l8_clouds, l8_shadows, l8_changes
 
 def gaussian(xstd, ystd, norm = True):
     winx = 2*int(np.ceil(1.96*xstd))
@@ -409,6 +412,7 @@ def points_convolve(im, kernel, points):
 def do_s2_psf(s2_toas, s2_clouds, s2_shadows, s2_surs, possible_x_y, struct, gaus, pointXs, pointYs):
     s2_conv_toas = []                    
     s2_cors_surs = []
+    s2_cors_pots = []
     for _, s2_toa in enumerate(s2_toas):      
         data       = s2_toa[12].data.copy()   
         border     = np.ones_like(data).astype(bool)
@@ -437,15 +441,24 @@ def do_s2_psf(s2_toas, s2_clouds, s2_shadows, s2_surs, possible_x_y, struct, gau
             conv_toa[conv_toa<=0.001] = np.nan
             s2_conv_toa.append(conv_toa)      
         s2_cors_sur = np.array(s2_surs[0])[:, p_corse_xs[mask], p_corse_ys[mask]]
-
+        
         s2_conv_toas.append(s2_conv_toa) 
         s2_cors_surs.append(s2_cors_sur)
+        s2_cors_pots.append(np.array([p_corse_xs[mask], p_corse_ys[mask]]))
 
-    return s2_conv_toas, s2_cors_surs
+    for _, s2_toa in enumerate(s2s):
+        sensor = s2_toa[0].split('_MSIL1C_')[0][-3:]
+        mask, s2_cors_sur = spectral_mapping(s2_cors_surs[_], s2_conv_toas[_], sensor)
+        s2_cors_surs[_]   = np.array(s2_cors_sur)[:, mask]
+        s2_cors_pots[_]   = np.array(s2_cors_pots[_])[:, mask]
+        s2_conv_toas[_]   = np.array(s2_conv_toas[_])[:, mask]
+
+    return s2_conv_toas, s2_cors_surs, s2_cors_pots
 
 def do_l8_pdf(l8_toas, l8_clouds, l8_shadows, l8_surs, possible_x_y, struct, gaus, pointXs, pointYs):    
     l8_conv_toas = []                    
     l8_cors_surs = []
+    l8_cors_pots = []
     for _, l8_toa in enumerate(l8_toas):      
         data       = l8_toa[6].data.copy()   
         border     = np.ones_like(data).astype(bool)
@@ -476,7 +489,16 @@ def do_l8_pdf(l8_toas, l8_clouds, l8_shadows, l8_surs, possible_x_y, struct, gau
     
         l8_conv_toas.append(l8_conv_toa) 
         l8_cors_surs.append(l8_cors_sur)
-    return l8_conv_toas, l8_cors_surs
+        l8_cors_pots.append(np.array([p_corse_xs[mask], p_corse_ys[mask]]))
+
+    for _, l8_toa in enumerate(l8s):
+        sensor = 'L8'
+        mask, l8_cors_sur = spectral_mapping(l8_cors_surs[_], l8_conv_toas[_], sensor)
+        l8_cors_surs[_]   = np.array(l8_cors_sur)[:, mask]
+        l8_cors_pots[_]   = np.array(l8_cors_pots[_])[:, mask]
+        l8_conv_toas[_]   = np.array(l8_conv_toas[_])[:, mask]
+
+    return l8_conv_toas, l8_cors_surs, l8_cors_pots
 
 def cal_psf_points(pix_res, sur_x, sur_y):
     xstd, ystd   = 260/pix_res, 340/pix_res
@@ -488,6 +510,151 @@ def cal_psf_points(pix_res, sur_x, sur_y):
     possible_x_y = np.array(possible_x_y).transpose(1,0,2).reshape(2, -1).T
     struct       = disk(5) 
     return possible_x_y, struct, gaus, pointXs, pointYs
+
+def spectral_mapping(sur, toa, sensor):
+    pmins = [[ 0.81793009, -1.55666629,  0.03879234,  0.02664923],
+             [ 0.50218134, -0.94398654, -0.36284911,  0.02876391],
+             [ 0.61609484, -1.12717424, -0.24037129,  0.0239488 ],
+             [ 0.67499803, -1.1988073 , -0.18331019,  0.02179141],
+             [ 0.23458873, -0.4048219 , -0.56692888,  0.02484466],
+             [ 0.08220874, -0.13492051, -0.74972003, -0.0331204 ]]
+    pmaxs = [[-0.76916621,  1.8524333 , -1.43464388,  0.34984857],
+             [-0.91464915,  1.96174322, -1.38302832,  0.28090987],
+             [-0.9199249 ,  1.9681306 , -1.3704881 ,  0.28924671],
+             [-0.87389258,  1.89261443, -1.30929285,  0.28807412],
+             [-0.71647392,  1.34657557, -0.79536697,  0.13551599],
+             [-0.34076349,  0.60544841, -0.34178543,  0.09669959]]
+    spec_map     =  Two_NN(np_model_file=file_path+'/spectral_mapping/Aqua_%s_spectral_mapping.npz'%sensor)
+    sur     = np.array(spec_map.predict(sur.T)).squeeze()
+    mask = True                                 
+    if sur.shape[1] > 3: 
+        for i in range(len(toa)):           
+            pmin = np.poly1d(pmins[i])
+            pmax = np.poly1d(pmaxs[i])
+            diff = toa[i] - sur[i]
+            mas  = (diff >= pmin(sur[i])) & (diff <= pmax(sur[i]))
+            mmin, mmax = np.percentile(toa[i][mas] - sur[i][mas], [5, 95])
+            mas  = mas & (diff >= mmin) & (diff <= mmax)
+            mask = mask & mas
+    else:        
+        mask = np.zeros(sur.shape[1]).astype(bool)
+    return mask, sur
+
+def get_stable_targets(changes, clouds, shadows):
+    stable_targets = []
+    for i in range(len(changes)):
+        change = np.mean([abs(changes[i][-1]).data + abs(changes[i][-2].data)], axis=0)
+        stable_target = (change < 0.015) & (~clouds[i]) & (~shadows[i]) 
+        stable_targets.append(stable_target)
+    return stable_targets
+
+def get_bounds(aoi, toa, pix_res):
+    g = gdal.Warp('', toa, format = 'MEM', cutlineDSName=aoi, cropToCutline=True, xRes = pix_res, yRes = pix_res)
+    dstSRS = g.GetProjectionRef()
+    geo_t = g.GetGeoTransform()
+    x_size, y_size = g.RasterXSize, g.RasterYSize     
+    xmin, xmax = min(geo_t[0], geo_t[0] + x_size * geo_t[1]), max(geo_t[0], geo_t[0] + x_size * geo_t[1])  
+    ymin, ymax = min(geo_t[3], geo_t[3] + y_size * geo_t[5]), max(geo_t[3], geo_t[3] + y_size * geo_t[5])
+    outputBounds = [xmin, ymin, xmax, ymax]
+    return dstSRS, outputBounds
+
+def read_ele(dem, pix_res, dstSRS, outputBounds):
+    g = gdal.Warp('', dem, format = 'MEM', outputBounds = outputBounds,
+                             dstSRS = dstSRS, xRes = pix_res, yRes = pix_res, resampleAlg = gdal.GRA_Bilinear)
+    data = g.ReadAsArray() / 1000.
+    return data
+
+def read_atmos_piro(cams_dir, pix_res, obs_time, dstSRS, outputBounds):
+    time_ind    = np.abs((obs_time.hour  + obs_time.minute/60. + obs_time.second/3600.) - np.arange(0,25,3)).argmin()
+    cams_names  = ['aod550', 'tcwv', 'gtco3'] 
+    prior_uncs = [0.4, 0.1, 0.05]
+    priors = []
+    prior_scales = [1., 0.1, 46.698]
+    for i in range(3):
+        prior_f = cams_dir + '/'.join([datetime.datetime.strftime(obs_time, '%Y_%m_%d'), 
+                                       datetime.datetime.strftime(obs_time, '%Y_%m_%d')+'_%s.tif'%cams_names[i]])
+        var_g   = gdal.Open(prior_f)
+        prior_g = gdal.Warp('', prior_f, format = 'MEM', outputBounds = outputBounds,
+                             dstSRS = dstSRS, xRes = pix_res, yRes = pix_res, resampleAlg = gdal.GRA_Bilinear)
+        g       = var_g.GetRasterBand(int(time_ind+1))
+        offset  = g.GetOffset()            
+        scale   = g.GetScale()             
+        data    = prior_g.GetRasterBand(int(time_ind+1)).ReadAsArray() * scale + offset
+        priors.append(data * prior_scales[i])
+        #prior_uncs.append(np.ones_like(data)*prior_uncs[i])
+    return priors, prior_uncs
+
+def read_ang(ang, pix_res, dstSRS, outputBounds):
+    g = gdal.Warp('', ang, format = 'MEM', outputBounds = outputBounds,
+                             dstSRS = dstSRS, xRes = pix_res, yRes = pix_res, resampleAlg = 0)
+    angs = g.ReadAsArray() / 100.  
+    return angs
+
+def prepare_aux(s2s, l8s, pix_res, obs_time, dstSRS, outputBounds, dem, cams_dir):
+    s2_aux = namedtuple('s2_aux', 'sza vza raa priors prior_uncs ele')
+    s2_auxs = []
+    ele = read_ele(dem, pix_res, dstSRS, outputBounds)
+    for s2 in s2s:
+        saa, sza = read_ang(s2.sun_angs, pix_res, dstSRS, outputBounds)
+        priors, prior_uncs = read_atmos_piro(cams_dir, pix_res, s2.obs_time, dstSRS, outputBounds) 
+        vzas = []
+        raas = []
+        for band in [0, 1, 2, 3, 8, 11, 12]:
+            vaa, vza = read_ang(s2.view_angs[band], pix_res, dstSRS, outputBounds)
+            raa      = vaa - saa
+            vzas.append(np.cos(np.deg2rad(vza)))          
+            raas.append(np.cos(np.deg2rad(raa)))                             
+        s2_auxs.append(s2_aux(np.cos(np.deg2rad(sza)), vzas, raas, priors, prior_uncs, ele))
+        
+    l8_aux = namedtuple('l8_aux', 'sza vza raa priors prior_uncs ele')                     
+    l8_auxs = [] 
+    for l8 in l8s:                                                    
+        saa, sza = read_ang(l8.sun_angs, pix_res, dstSRS, outputBounds)
+        priors, prior_uncs = read_atmos_piro(cams_dir, pix_res, l8.obs_time, dstSRS, outputBounds) 
+        vzas = []                                                     
+        raas = []
+        for band in [0, 1, 2, 3, 4, 5, 6]:                          
+            vaa, vza = read_ang(l8.view_angs[band], pix_res, dstSRS, outputBounds)
+            raa      = vaa - saa
+            vzas.append(np.cos(np.deg2rad(vza)))           
+            raas.append(np.cos(np.deg2rad(raa)))                               
+        l8_auxs.append(l8_aux(np.cos(np.deg2rad(sza)), vzas, raas, priors, prior_uncs, ele))
+    return s2_auxs, l8_auxs
+
+def read_xa_xb_xc(sensor, satellite, toa_bands):
+    xps = namedtuple('xps', 'xap xbp xcp')
+    xaps = []
+    xbps = []
+    xcps = []
+    for band in toa_bands:
+        band_name = 'B' + band.upper().split('/')[-1].split('B')[-1].split('.')[0]
+        xap_emu = glob(file_path + '/emus/isotropic_%s_%s_%s_xap.npz'%(sensor, satellite, band_name))[0]
+        xbp_emu = glob(file_path + '/emus/isotropic_%s_%s_%s_xbp.npz'%(sensor, satellite, band_name))[0]
+        xcp_emu = glob(file_path + '/emus/isotropic_%s_%s_%s_xcp.npz'%(sensor, satellite, band_name))[0]
+        xap = Two_NN(np_model_file=xap_emu)
+        xbp = Two_NN(np_model_file=xbp_emu)
+        xcp = Two_NN(np_model_file=xcp_emu)
+        xaps.append(xap)
+        xbps.append(xbp)
+        xcps.append(xcp)
+    return xps(xaps, xbps, xcps)
+
+
+def load_emus(s2s, l8s):
+    s2_toa_bands = ['B01', 'B02', 'B03', 'B04', 'B8A', 'B11', 'B12']
+    s2_emus      = []    
+    for _, s2_toa in enumerate(s2s):
+        satellite = s2_toa[0].split('_MSIL1C_')[0][-3:]
+        s2_emu = read_xa_xb_xc('MSI', satellite, s2_toa_bands)
+        s2_emus.append(s2_emu)
+
+    l8_toa_bands = ['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7']
+    l8_emus = [] 
+    l8_emu  = read_xa_xb_xc('OLI', 'L8', l8_toa_bands)
+    for _, l8_toa in enumerate(l8s):
+        l8_emus.append(l8_emu)
+    return s2_emus, l8_emus
+    
 
 def do_one_s2(fs):
 
@@ -501,20 +668,22 @@ def do_one_s2(fs):
     l8_times = []
 
     pix_res = 30
-    g = gdal.Warp('', s2_files[0][2][2], format = 'MEM', cutlineDSName=aoi, cropToCutline=True, xRes = pix_res, yRes = pix_res)
-    dstSRS = g.GetProjectionRef()
-    geo_t = g.GetGeoTransform()
-    x_size, y_size = g.RasterXSize, g.RasterYSize     
-    xmin, xmax = min(geo_t[0], geo_t[0] + x_size * geo_t[1]), max(geo_t[0], geo_t[0] + x_size * geo_t[1])  
-    ymin, ymax = min(geo_t[3], geo_t[3] + y_size * geo_t[5]), max(geo_t[3], geo_t[3] + y_size * geo_t[5])
-    outputBounds = [xmin, ymin, xmax, ymax]
+    dstSRS, outputBounds = get_bounds(aoi, s2_files[0][2][2], pix_res)
+
     for i in s2_files:
         obs_time = datetime.datetime.strptime(i[0].split('_MSIL1C_')[1][:15], '%Y%m%dT%H%M%S')
         s2_times.append(obs_time)
         dat = np.array(i, dtype = np.object)[[0,1,2,3,-1]].tolist()
         s2s.append(s2_obs(dat[0], dat[1], dat[2], dat[3], dat[4], obs_time))
     for i in l8_files:
-        obs_time = datetime.datetime.strptime(i[0].split('LC08_')[1][12:20], '%Y%m%d')
+        with open(i[-1]) as f:              
+            for line in f:                   
+                if 'DATE_ACQUIRED' in line:
+                    date = line.split()[-1]  
+                elif 'SCENE_CENTER_TIME' in line:
+                    time = line.split()[-1]
+        datetime_str = date + time
+        obs_time     = datetime.datetime.strptime(datetime_str.split('.')[0], '%Y-%m-%d"%H:%M:%S')
         l8_times.append(obs_time)
         dat = np.array(i, dtype = np.object)[[0,1,2,3,-1]].tolist()
         l8s.append(l8_obs(dat[0], dat[1], dat[2], dat[3], dat[4], obs_time))
@@ -524,16 +693,45 @@ def do_one_s2(fs):
     
     s2_toas, s2_surs, s2_uncs, s2_clds = read_s2(s2s, pix_res, dstSRS, outputBounds, vrt_dir)
     l8_toas, l8_surs, l8_uncs, l8_clds = read_l8(l8s, pix_res, dstSRS, outputBounds, vrt_dir)
-    s2_clouds, s2_shadows, l8_clouds, l8_shadows = redo_cloud_shadow(s2_toas, l8_toas, s2_clds, l8_clds)
+    s2_clouds, s2_shadows,s2_changes, l8_clouds, l8_shadows, l8_changes = redo_cloud_shadow(s2_toas, l8_toas, s2_clds, l8_clds)
 
     sur_x, sur_y = s2_surs[0][0].shape
     possible_x_y, struct, gaus, pointXs, pointYs = cal_psf_points(pix_res, sur_x, sur_y)
-    s2_conv_toas, s2_cors_surs = do_s2_psf(s2_toas, s2_clouds, s2_shadows, s2_surs, possible_x_y, struct, gaus, pointXs, pointYs) 
-    l8_conv_toas, l8_cors_surs = do_l8_pdf(l8_toas, l8_clouds, l8_shadows, l8_surs, possible_x_y, struct, gaus, pointXs, pointYs)
+    s2_conv_toas, s2_cors_surs, s2_cors_pots = do_s2_psf(s2_toas, s2_clouds, s2_shadows, s2_surs, possible_x_y, struct, gaus, pointXs, pointYs) 
+    l8_conv_toas, l8_cors_surs, l8_cors_pots = do_l8_pdf(l8_toas, l8_clouds, l8_shadows, l8_surs, possible_x_y, struct, gaus, pointXs, pointYs)
+
+    cams_dir  = '/vsicurl/http://www2.geog.ucl.ac.uk/~ucfafyi/cams/'
+    dem       = '/vsicurl/http://www2.geog.ucl.ac.uk/~ucfafyi/eles/global_dem.vrt'
+
+    s2_auxs, l8_auxs = prepare_aux(s2s, l8s, pix_res, obs_time, dstSRS, outputBounds, dem, cams_dir)
+    s2_emus, l8_emus = load_emus(s2s, l8s)
+
+    obs_nums         = len(s2s) + len(l8s) - np.array(s2_clouds + l8_clouds + s2_shadows + l8_shadows).astype(int).sum(axis=0)
+    stable_targets   = get_stable_targets(s2_changes + l8_changes, s2_clouds + l8_clouds, s2_shadows + l8_shadows)
+    target_mask      = (obs_nums >= 0.5*(len(s2s) + len(l8s))) & (np.array(stable_targets).astype(int).sum(axis=0)>1)
 
 
-    mask = np.zeros_like(s2_toas[0][0])
-    for i in l8_toas + s2_toas:
-        mask += np.isnan(i[-1]).astype(int)
-    mask = mask <= 0.5 * (len(l8_toas) + len(s2_toas))
+
+
+    
+    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
