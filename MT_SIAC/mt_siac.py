@@ -12,6 +12,7 @@ from io import StringIO
 import pandas as pd
 import numpy as np
 from glob import glob
+from Two_NN import Two_NN
 from functools import partial
 from Get_S2 import get_s2_files
 from get_MCD43 import get_mcd43
@@ -26,6 +27,8 @@ from scipy.interpolate import NearestNDInterpolator
 from skimage.morphology import disk, binary_dilation, binary_closing
 procs =  psutil.cpu_count()
 file_path = os.path.dirname(os.path.realpath(__file__))
+from create_logger import create_logger
+logger = create_logger()
 
 sites = [i.split('/')[-2] for i in glob('/data/nemesis/acix_2/S2s_30/*/')] 
 
@@ -97,7 +100,7 @@ def _find_around_files(site):
     res = []           
     tiles = np.unique([i.split('_')[-2] for i in s2_files]).tolist()
     for i in s2_times + l8_times:
-        all_time  = [i+ datetime.timedelta(days=ii) for ii in range(-16, 16)]
+        all_time  = [i+ datetime.timedelta(days=ii) for ii in range(-20, 20)]
         need_files = [j for j in fs if (datetime.datetime.strptime(j[11:19], '%Y%m%d') in all_time) & (j[38:44] in tiles)]
         res += need_files   
     return np.unique(res).tolist()
@@ -111,10 +114,10 @@ def find_around_files(site):
         s2_fnames = [] 
         l8_fnames = []
         for j in s2_times: 
-            if abs((j - i).days)<16: 
+            if abs((j - i).days)<20: 
                 s2_fnames.append(s2_files[s2_times.index(j)]) 
         for k in l8_times: 
-            if abs((k - i).days)<16: 
+            if abs((k - i).days)<20: 
                 l8_fnames.append(l8_files[l8_times.index(k)]) 
         res.append([aoi, s2_files[s2_times.index(i)], s2_fnames, l8_fnames])
     return res
@@ -394,7 +397,7 @@ def convolve(data, kernel, points):
     pady = int(np.ceil(kernel.shape[1]/2.)) 
     for _ in range(len(points)): 
         x, y    = points[_]
-        batch   = data[x - kx + padx: x + kx + padx, y - ky + pady: y + ky + pady] 
+        batch   = data[x: x + 2*kx, y: y + 2*ky] 
         rets[_] = np.nansum(batch[:kernel.shape[0],:kernel.shape[1]]*kernel)
     return rets
 
@@ -406,14 +409,16 @@ def points_convolve(im, kernel, points):
     pady = int(k_cols/2.)
     data = np.zeros((rows + 2*k_rows, cols + 2*k_cols))
     #data = np.pad(im, (2*padx, 2*pady), mode='reflect') 
-    data[k_rows: rows + k_rows, k_cols: cols + k_cols] = im
+    data[:rows, :cols] = im
     return convolve(data, kernel, points) 
 
-def do_s2_psf(s2_toas, s2_clouds, s2_shadows, s2_surs, possible_x_y, struct, gaus, pointXs, pointYs):
+def do_s2_psf(s2s, s2_toas, s2_clouds, s2_shadows, s2_surs, possible_x_y, struct, gaus, pointXs, pointYs):
     s2_conv_toas = []                    
     s2_cors_surs = []
     s2_cors_pots = []
     for _, s2_toa in enumerate(s2_toas):      
+        sur        = s2_surs[_][0]            
+        c_x, c_y   = sur.shape   
         data       = s2_toa[12].data.copy()   
         border     = np.ones_like(data).astype(bool)
         border[1:-1, 1:-1] = False       
@@ -421,7 +426,7 @@ def do_s2_psf(s2_toas, s2_clouds, s2_shadows, s2_surs, possible_x_y, struct, gau
         bad_pix    = ndimage.binary_dilation(bad_pix, structure = struct, iterations=10)
         good_xy    = (~bad_pix)[pointXs, pointYs]
         p_xs, p_ys = pointXs[good_xy], pointYs[good_xy]
-        p_corse_xs, p_corse_ys = np.array(range(60))[good_xy], np.array(range(60))[good_xy]
+        p_corse_xs, p_corse_ys = np.array(range(c_x))[good_xy], np.array(range(c_y))[good_xy]
         p_corse_xs, p_corse_ys = np.repeat(p_corse_xs, len(p_corse_ys)), np.tile(p_corse_ys, len(p_corse_xs))
         par = partial(cost, toa = data, sur = s2_surs[_][-1], pxs = p_xs, pys = p_ys, pcxs = p_corse_xs, pcys = p_corse_ys, gaus = gaus)
         p   = Pool()                     
@@ -431,6 +436,7 @@ def do_s2_psf(s2_toas, s2_clouds, s2_shadows, s2_surs, possible_x_y, struct, gau
         mind = np.argmin(np.array(ret, dtype=np.object)[:,0])
         shift_x, shift_y   = possible_x_y[mind]
         un_r, points, mask = ret[mind]   
+        logger.info('X_shift: %d, Y_shift: %d, rValue: %.02f'%(shift_x, shift_y, 1-un_r))
         s2_conv_toa = []          
         s2_cors_sur = []       
         for band in [1, 2, 3, 8, 11, 12]:                                                                                                                                 
@@ -445,21 +451,26 @@ def do_s2_psf(s2_toas, s2_clouds, s2_shadows, s2_surs, possible_x_y, struct, gau
         s2_conv_toas.append(s2_conv_toa) 
         s2_cors_surs.append(s2_cors_sur)
         s2_cors_pots.append(np.array([p_corse_xs[mask], p_corse_ys[mask]]))
-
+    s2_obss = [] 
     for _, s2_toa in enumerate(s2s):
+        s2_obs = namedtuple('s2_obs', 'conv_toa cors_sur cors_pts')
         sensor = s2_toa[0].split('_MSIL1C_')[0][-3:]
         mask, s2_cors_sur = spectral_mapping(s2_cors_surs[_], s2_conv_toas[_], sensor)
-        s2_cors_surs[_]   = np.array(s2_cors_sur)[:, mask]
-        s2_cors_pots[_]   = np.array(s2_cors_pots[_])[:, mask]
-        s2_conv_toas[_]   = np.array(s2_conv_toas[_])[:, mask]
+        #s2_cors_surs[_]   = np.array(s2_cors_sur)[:, mask]
+        #s2_cors_pots[_]   = np.array(s2_cors_pots[_])[:, mask]
+        #s2_conv_toas[_]   = np.array(s2_conv_toas[_])[:, mask]
+        ret = s2_obs(np.array(s2_cors_sur)[:, mask], np.array(s2_conv_toas[_])[:, mask], np.array(s2_cors_pots[_])[:, mask])
+        s2_obss.append(ret)
 
-    return s2_conv_toas, s2_cors_surs, s2_cors_pots
+    return s2_obss
 
-def do_l8_pdf(l8_toas, l8_clouds, l8_shadows, l8_surs, possible_x_y, struct, gaus, pointXs, pointYs):    
+def do_l8_pdf(l8s, l8_toas, l8_clouds, l8_shadows, l8_surs, possible_x_y, struct, gaus, pointXs, pointYs):    
     l8_conv_toas = []                    
     l8_cors_surs = []
     l8_cors_pots = []
     for _, l8_toa in enumerate(l8_toas):      
+        sur        = l8_surs[_][0]
+        c_x, c_y   = sur.shape
         data       = l8_toa[6].data.copy()   
         border     = np.ones_like(data).astype(bool)
         border[1:-1, 1:-1] = False       
@@ -467,9 +478,9 @@ def do_l8_pdf(l8_toas, l8_clouds, l8_shadows, l8_surs, possible_x_y, struct, gau
         bad_pix    = ndimage.binary_dilation(bad_pix, structure = struct, iterations=10)
         good_xy    = (~bad_pix)[pointXs, pointYs]
         p_xs, p_ys = pointXs[good_xy], pointYs[good_xy]
-        p_corse_xs, p_corse_ys = np.array(range(60))[good_xy], np.array(range(60))[good_xy]
+        p_corse_xs, p_corse_ys = np.array(range(c_x))[good_xy], np.array(range(c_y))[good_xy]
         p_corse_xs, p_corse_ys = np.repeat(p_corse_xs, len(p_corse_ys)), np.tile(p_corse_ys, len(p_corse_xs))
-        par = partial(cost, toa = data, sur = s2_surs[_][-1], pxs = p_xs, pys = p_ys, pcxs = p_corse_xs, pcys = p_corse_ys, gaus = gaus)
+        par = partial(cost, toa = data, sur = l8_surs[_][-1], pxs = p_xs, pys = p_ys, pcxs = p_corse_xs, pcys = p_corse_ys, gaus = gaus)
         p   = Pool()                     
         ret = p.map(par, possible_x_y)        
         p.close()                        
@@ -477,6 +488,7 @@ def do_l8_pdf(l8_toas, l8_clouds, l8_shadows, l8_surs, possible_x_y, struct, gau
         mind = np.argmin(np.array(ret, dtype=np.object)[:,0])
         shift_x, shift_y   = possible_x_y[mind]
         un_r, points, mask = ret[mind]   
+        logger.info('X_shift: %d, Y_shift: %d, rValue: %.02f'%(shift_x, shift_y, 1-un_r))
         l8_conv_toa = []          
         for band in [1, 2, 3, 4, 5, 6]:                                                                                                                                 
             data = l8_toa[band].data.copy()   
@@ -490,15 +502,17 @@ def do_l8_pdf(l8_toas, l8_clouds, l8_shadows, l8_surs, possible_x_y, struct, gau
         l8_conv_toas.append(l8_conv_toa) 
         l8_cors_surs.append(l8_cors_sur)
         l8_cors_pots.append(np.array([p_corse_xs[mask], p_corse_ys[mask]]))
-
+    l8_obss = []
     for _, l8_toa in enumerate(l8s):
+        l8_obs = namedtuple('l8_obs', 'conv_toa cors_sur cors_pts')
         sensor = 'L8'
         mask, l8_cors_sur = spectral_mapping(l8_cors_surs[_], l8_conv_toas[_], sensor)
-        l8_cors_surs[_]   = np.array(l8_cors_sur)[:, mask]
-        l8_cors_pots[_]   = np.array(l8_cors_pots[_])[:, mask]
-        l8_conv_toas[_]   = np.array(l8_conv_toas[_])[:, mask]
-
-    return l8_conv_toas, l8_cors_surs, l8_cors_pots
+        #l8_cors_surs[_]   = np.array(l8_cors_sur)[:, mask]
+        #l8_cors_pots[_]   = np.array(l8_cors_pots[_])[:, mask]
+        #l8_conv_toas[_]   = np.array(l8_conv_toas[_])[:, mask]
+        ret = l8_obs(np.array(l8_cors_sur)[:, mask], np.array(l8_conv_toas[_])[:, mask], np.array(l8_cors_pots[_])[:, mask])
+        l8_obss.append(ret)
+    return l8_obss
 
 def cal_psf_points(pix_res, sur_x, sur_y):
     xstd, ystd   = 260/pix_res, 340/pix_res
@@ -506,7 +520,7 @@ def cal_psf_points(pix_res, sur_x, sur_y):
     pointYs     = ((np.arange(sur_y) * 500) // pix_res ) 
     gaus         = gaussian(xstd, ystd, norm = True)
  
-    possible_x_y = [(np.arange(0,50), np.arange(0,50) +i) for i in range(-10, 10)]
+    possible_x_y = [(np.arange(-25,25), np.arange(-25,25) +i) for i in range(-10, 10)]
     possible_x_y = np.array(possible_x_y).transpose(1,0,2).reshape(2, -1).T
     struct       = disk(5) 
     return possible_x_y, struct, gaus, pointXs, pointYs
@@ -590,7 +604,7 @@ def read_ang(ang, pix_res, dstSRS, outputBounds):
     angs = g.ReadAsArray() / 100.  
     return angs
 
-def prepare_aux(s2s, l8s, pix_res, obs_time, dstSRS, outputBounds, dem, cams_dir):
+def prepare_aux(s2s, l8s, pix_res, dstSRS, outputBounds, dem, cams_dir):
     s2_aux = namedtuple('s2_aux', 'sza vza raa priors prior_uncs ele')
     s2_auxs = []
     ele = read_ele(dem, pix_res, dstSRS, outputBounds)
@@ -655,27 +669,19 @@ def load_emus(s2s, l8s):
         l8_emus.append(l8_emu)
     return s2_emus, l8_emus
     
-
-def do_one_s2(fs):
-
-    aoi, s2_file, s2_fnames, l8_fnames = fs
-    s2_files, l8_files = pre_processing(s2_fnames, l8_fnames)
+def get_obs(s2_files, l8_files):
     s2_obs = namedtuple('s2_obs', 'sun_angs view_angs toa cloud meta obs_time') 
     l8_obs = namedtuple('l8_obs', 'sun_angs view_angs toa cloud meta obs_time') 
-    s2s = []
-    l8s = []
-    s2_times = []
-    l8_times = []
-
-    pix_res = 30
-    dstSRS, outputBounds = get_bounds(aoi, s2_files[0][2][2], pix_res)
-
-    for i in s2_files:
+    s2s = []                             
+    l8s = []                             
+    s2_times = []                        
+    l8_times = []  
+    for i in s2_files:                   
         obs_time = datetime.datetime.strptime(i[0].split('_MSIL1C_')[1][:15], '%Y%m%dT%H%M%S')
-        s2_times.append(obs_time)
+        s2_times.append(obs_time)        
         dat = np.array(i, dtype = np.object)[[0,1,2,3,-1]].tolist()
         s2s.append(s2_obs(dat[0], dat[1], dat[2], dat[3], dat[4], obs_time))
-    for i in l8_files:
+    for i in l8_files:                   
         with open(i[-1]) as f:              
             for line in f:                   
                 if 'DATE_ACQUIRED' in line:
@@ -686,8 +692,39 @@ def do_one_s2(fs):
         obs_time     = datetime.datetime.strptime(datetime_str.split('.')[0], '%Y-%m-%d"%H:%M:%S')
         l8_times.append(obs_time)
         dat = np.array(i, dtype = np.object)[[0,1,2,3,-1]].tolist()
-        l8s.append(l8_obs(dat[0], dat[1], dat[2], dat[3], dat[4], obs_time))
+        l8s.append(l8_obs(dat[0], dat[1], dat[2], dat[3], dat[4], obs_time)) 
+    return s2s, s2_times, l8s, l8_times
 
+def combine_mask(clouds, shadows, target_mask):
+    masks = []
+    for i in range(len(clouds)):
+        mask = ~(clouds[i] | shadows[i] | target_mask)
+        masks.append(mask)
+    return masks
+        
+
+def grid_conversion(array, new_shape):
+    array[np.isnan(array)] = np.nanmean(array)
+    rs, cs = array.shape
+    x, y   = np.arange(rs), np.arange(cs)
+    kx = 3 if rs > 3 else 1                       
+    ky = 3 if cs > 3 else 1                       
+    f      = interpolate.RectBivariateSpline(x, y, array, kx=kx, ky=ky, s=0)
+    nx, ny = new_shape
+    nx, ny = 1. * np.arange(nx) / nx * rs, 1. * np.arange(ny) / ny * cs
+    znew   = f(nx, ny)
+    return znew
+
+
+def do_one_s2(fs):
+
+    aoi, s2_file, s2_fnames, l8_fnames = fs
+    s2_files, l8_files = pre_processing(s2_fnames, l8_fnames)
+
+    pix_res = 30
+    dstSRS, outputBounds = get_bounds(aoi, s2_files[0][2][2], pix_res)
+
+    s2s, s2_times, l8s, l8_times = get_obs(s2_files, l8_files)
     obs_times = np.unique(s2_times + l8_times).tolist()
     vrt_dir = get_mcd43(aoi, obs_times, '/home/ucfafyi/hep/MCD43/', temporal_window = 4, jasmin = True, vrt_dir='/home/ucfafyi/MCD43_VRT/')
     
@@ -697,41 +734,373 @@ def do_one_s2(fs):
 
     sur_x, sur_y = s2_surs[0][0].shape
     possible_x_y, struct, gaus, pointXs, pointYs = cal_psf_points(pix_res, sur_x, sur_y)
-    s2_conv_toas, s2_cors_surs, s2_cors_pots = do_s2_psf(s2_toas, s2_clouds, s2_shadows, s2_surs, possible_x_y, struct, gaus, pointXs, pointYs) 
-    l8_conv_toas, l8_cors_surs, l8_cors_pots = do_l8_pdf(l8_toas, l8_clouds, l8_shadows, l8_surs, possible_x_y, struct, gaus, pointXs, pointYs)
+    s2_obs = do_s2_psf(s2s, s2_toas, s2_clouds, s2_shadows, s2_surs, possible_x_y, struct, gaus, pointXs, pointYs) 
+    l8_obs = do_l8_pdf(l8s, l8_toas, l8_clouds, l8_shadows, l8_surs, possible_x_y, struct, gaus, pointXs, pointYs)
 
     cams_dir  = '/vsicurl/http://www2.geog.ucl.ac.uk/~ucfafyi/cams/'
     dem       = '/vsicurl/http://www2.geog.ucl.ac.uk/~ucfafyi/eles/global_dem.vrt'
 
-    s2_auxs, l8_auxs = prepare_aux(s2s, l8s, pix_res, obs_time, dstSRS, outputBounds, dem, cams_dir)
+    aero_res = 250
+    s2_auxs, l8_auxs = prepare_aux(s2s, l8s, aero_res, dstSRS, outputBounds, dem, cams_dir)
     s2_emus, l8_emus = load_emus(s2s, l8s)
 
-    obs_nums         = len(s2s) + len(l8s) - np.array(s2_clouds + l8_clouds + s2_shadows + l8_shadows).astype(int).sum(axis=0)
+    obs_nums         = np.array(s2_clouds + l8_clouds + s2_shadows + l8_shadows).astype(int).sum(axis=0)
     stable_targets   = get_stable_targets(s2_changes + l8_changes, s2_clouds + l8_clouds, s2_shadows + l8_shadows)
-    target_mask      = (obs_nums >= 0.5*(len(s2s) + len(l8s))) & (np.array(stable_targets).astype(int).sum(axis=0)>1)
+    target_mask      = (obs_nums > 0.5*(len(s2s) + len(l8s))) | (np.array(stable_targets).astype(int).sum(axis=0)<=1)
+
+    masks = combine_mask(s2_clouds + l8_clouds, s2_shadows + l8_shadows, target_mask)   
+    
+
+
+def predic_xps(X, emus):
+    sza, vza, raa, aot, tcwv, tco3, ele = X
+    xap_Hs  = []
+    xbp_Hs  = []
+    xcp_Hs  = []
+    xap_dHs = []
+    xbp_dHs = []
+    xcp_dHs = []
+    for i in range(6):
+        xx    = np.array([sza, vza[i], raa[i], aot, tcwv, tco3, ele]).T
+        H, dH = emus.xap[i+1].predict(xx, cal_jac=True)[0]
+        xap_Hs.append(H)
+        xap_dHs.append(dH[:,3:5])
+
+        H, dH = emus.xbp[i+1].predict(xx, cal_jac=True)[0]
+        xbp_Hs.append(H)
+        xbp_dHs.append(dH[:,3:5])
+
+        H, dH = emus.xcp[i+1].predict(xx, cal_jac=True)[0]
+        xcp_Hs.append(H)
+        xcp_dHs.append(dH[:,3:5])
+
+    return np.array(xap_Hs), np.array(xbp_Hs), np.array(xcp_Hs), np.array(xap_dHs), np.array(xbp_dHs), np.array(xcp_dHs)
+
+@jit(nopython=True)
+def object_jac(xap_H, xbp_H, xcp_H, xap_dH, xbp_dH, xcp_dH, toa, sur, band_weight):
+
+    band_weight = np.atleast_3d(band_weight).transpose(1,0,2)
+    toa     = np.atleast_3d(toa)
+    sur     = np.atleast_3d(sur)
+    boa_unc = 0.02
+
+    y        = xap_H * toa - xbp_H
+
+    sur_ref  = y / (1 + xcp_H * y) 
+
+    diff     = sur_ref - sur
+    
+    unc_2 = boa_unc**2
+
+    full_J   = np.sum(0.5 * band_weight * (diff)**2 / unc_2, axis=0)
+
+    toa_xap_dH   = toa * xap_dH
+    toa_xap_H    = toa * xap_H
+    toa_xap_H_2  = toa_xap_H**2
+    xbp_H_xcp_dH = xbp_H * xcp_dH
+    xcp_H_2      = xcp_H**2
+    xbp_H_2      = xbp_H**2
+    
+    #ddH       = -1 * (-toa * xap_dH - 2 * toa * xap_H * xbp_H * xcp_dH + 
+    #                 toa**2 * xap_H**2 * xcp_dH + xbp_dH + xbp_H**2 * xcp_dH) / (toa * xap_H * xcp_H - xbp_H * xcp_H + 1)**2 
+
+    # -1 * (-toa * xap_dH - 2 * toa * xap_H * xbp_H * xcp_dH + toa**2 * xap_H**2 * xcp_dH + xbp_dH + xbp_H**2 * xcp_dH)
+    above = (toa_xap_dH + 2 * toa_xap_H * xbp_H_xcp_dH - toa_xap_H_2 * xcp_dH -  xbp_dH - xbp_H_xcp_dH * xbp_H)
+
+    # (toa_xap_H * xcp_H - xbp_H * xcp_H + 1)**2
+    bottom = -2 * toa_xap_H * xbp_H * xcp_H_2 + toa_xap_H_2 * xcp_H_2 + 2 * toa_xap_H * xcp_H +  xbp_H_2 * xcp_H_2 - 2 * xbp_H * xcp_H + 1
+
+    dH = above / bottom
+    #if not np.allclose(dH, ddH):
+    #    raise
+    full_dJ  = np.sum(band_weight * dH * diff / (unc_2), axis=0)
+    return full_J, full_dJ
+
+@jit(nopython=True)
+def remap_J_dJ(J, dJ, pts, aero_res, shape):
+    full_J  = np.zeros(shape)
+    full_dJ = np.zeros((2,) + shape)
+    pixs    = int(np.ceil(500 / aero_res))
+    for i in range(len(pts[0])):
+        pt = pts[:,i]
+
+        sub = full_J [   pt[0] : pt[0] + pixs, pt[1] : pt[1] + pixs] 
+        full_J       [   pt[0] : pt[0] + pixs, pt[1] : pt[1] + pixs] = np.ones_like(sub) * J[i]
+
+        sub = full_dJ[0, pt[0] : pt[0] + pixs, pt[1] : pt[1] + pixs] 
+        full_dJ      [0, pt[0] : pt[0] + pixs, pt[1] : pt[1] + pixs] = np.ones_like(sub) * dJ[i][0]
+
+        sub = full_dJ[1, pt[0] : pt[0] + pixs, pt[1] : pt[1] + pixs] 
+        full_dJ      [1, pt[0] : pt[0] + pixs, pt[1] : pt[1] + pixs] = np.ones_like(sub) * dJ[i][1]
+
+    return full_J, full_dJ
+
+def obs_cost(p, obs, emus, auxs, pix_res, aero_res):
+    alpha = -1.6
+    band_weight = np.array([0.469, 0.555, 0.645, 0.859, 1.64 , 2.13 ])**alpha  
+    Js  = 0
+    dJs = 0
+    for _, ob in enumerate(obs):        
+        emu = emus[_]
+        aux = auxs[_]
+        pts = (ob.cors_pts * 500 / aero_res).astype(int)
+    
+        size   = aux.sza.size
+        shape  = aux.sza.shape
+        pp     = p[_ * size * 2 : (_+1) * size * 2].reshape(2, shape[0], shape[1])
+    
+        aot    = pp[0]               [   pts[0], pts[1]] 
+        tcwv   = pp[1]               [   pts[0], pts[1]] 
+        sza    = np.array(aux.sza)   [   pts[0], pts[1]] 
+        vza    = np.array(aux.vza)   [:, pts[0], pts[1]] 
+        raa    = np.array(aux.raa)   [:, pts[0], pts[1]] 
+        ele    = np.array(aux.ele)   [   pts[0], pts[1]]
+        tco3   = np.array(aux.priors)[2, pts[0], pts[1]]
+        X      = [sza, vza, raa, aot, tcwv, tco3, ele]
+        xap_Hs, xbp_Hs, xcp_Hs, xap_dHs, xbp_dHs, xcp_dHs  = predic_xps(X, emu)
+        
+        J, dJ  = object_jac(xap_Hs, xbp_Hs, xcp_Hs, xap_dHs, xbp_dHs, xcp_dHs, ob.conv_toa, ob.cors_sur, band_weight)       
+        J, dJ = remap_J_dJ(J, dJ, pts, aero_res, shape)
+        Js  += J
+        dJs += dJ
+    return Js, dJs
+
+@jit(nopython=True)
+def prior_jac(pp, priors, prior_uncs):
+    shape = priors[0].shape          
+    size  = priors[0].size 
+    unc_2 = prior_uncs[:2]**2
+    dif_1 = pp[0] - priors[0]
+    dif_2 = pp[1] - priors[1]
+    J     = 0.5 * (dif_1**2 / unc_2[0] + dif_2**2 / unc_2[1])
+    dJ    = np.zeros((2,) + shape)
+    dJ[0] = dif_1 / unc_2[0]
+    dJ[1] = dif_2 / unc_2[1]
+    return J, dJ
+
+def prior_cost(p, auxs):
+    Js  = 0
+    dJs = 0
+    size = auxs[0].sza.size
+    shape = auxs[0].sza.shape
+    for i, aux in enumerate(auxs):
+        pp    = p[i * size * 2 : (i+1) * size * 2].reshape(2, shape[0], shape[1])
+        J, dJ = prior_jac(pp, aux.priors, np.array(aux.prior_uncs))
+        Js  +=  J
+        dJs += dJ
+    return Js, dJs
+
+@jit(nopython=True) 
+def smoothness (x, sigma_model_2):
+    #hood = np.array([x[ :-2,  :-2], x[ :-2, 1:-1], 
+    #                 x[ :-2,  2: ], x[1:-1,  :-2], 
+    #                 x[1:-1,  2: ], x[2:  ,  :-2], 
+    #                 x[ 2:,  1:-1], x[2:  , 2:  ]])
+
+    #sigma_model_2 
+    J  = np.zeros_like(x) 
+    dJ = np.zeros_like(x)
+
+    for sub in [x[ :-2, 1:-1], x[1:-1, :-2], x[1:-1, 2: ], x[ 2:,1:-1]]:
+        diff          = sub - x[1:-1, 1:-1] 
+        J [1:-1,1:-1] = J [1:-1, 1:-1] + 0.5 * diff ** 2 / sigma_model_2
+        dJ[1:-1,1:-1] = dJ[1:-1, 1:-1] - diff            / sigma_model_2        
+    
+    return J, 2 * dJ
+
+def smooth_cost(p, auxs, gamma):
+    Js  = 0
+    dJs = 0
+    inv_gamma = (1 / gamma)**2
+    for i, aux in enumerate(auxs):
+        size  = aux.sza.size        
+        shape = aux.sza.shape 
+        pp    = p[i * size * 2 : (i+1) * size * 2].reshape(2, shape[0], shape[1])
+        J_aot,  dJ_aot  = smoothness(pp[0],  inv_gamma)
+        J_tcwv, dJ_tcwv = smoothness(pp[1],  inv_gamma)
+        J, dJ      = J_aot + J_tcwv, np.array([dJ_aot, dJ_tcwv])
+        Js  += J         
+        dJs +=dJ       
+    return Js, dJs
+
+
+def predic_xps_all(X, emus):                                                                                                                                                  
+    sza, vza, raa, aot, tcwv, tco3, ele = X
+    xap_Hs  = []       
+    xbp_Hs  = []       
+    xcp_Hs  = []       
+    xap_dHs = []       
+    xbp_dHs = []       
+    xcp_dHs = []       
+    for i in range(7): 
+        xx    = np.array([sza, vza[i], raa[i], aot, tcwv, tco3, ele]).T
+        H, dH = emus.xap[i].predict(xx, cal_jac=True)[0]
+        xap_Hs.append(H)
+        xap_dHs.append(dH[:,3:5])
+                       
+        H, dH = emus.xbp[i].predict(xx, cal_jac=True)[0]
+        xbp_Hs.append(H)
+        xbp_dHs.append(dH[:,3:5])
+                       
+        H, dH = emus.xcp[i].predict(xx, cal_jac=True)[0]
+        xcp_Hs.append(H)
+        xcp_dHs.append(dH[:,3:5])
+                       
+    return np.array(xap_Hs), np.array(xbp_Hs), np.array(xcp_Hs), np.array(xap_dHs), np.array(xbp_dHs), np.array(xcp_dHs)
+
+@jit(nopython=True)
+def cal_sur(xap_H, xbp_H, xcp_H, xap_dH, xbp_dH, xcp_dH, toa):
+     
+    toa     = np.atleast_3d(toa)
+    y        = xap_H * toa - xbp_H
+     
+    sur_ref  = y / (1 + xcp_H * y) 
+     
+    toa_xap_dH   = toa * xap_dH
+    toa_xap_H    = toa * xap_H
+    toa_xap_H_2  = toa_xap_H**2
+    xbp_H_xcp_dH = xbp_H * xcp_dH
+    xcp_H_2      = xcp_H**2
+    xbp_H_2      = xbp_H**2
+     
+    #ddH       = -1 * (-toa * xap_dH - 2 * toa * xap_H * xbp_H * xcp_dH + 
+    #                 toa**2 * xap_H**2 * xcp_dH + xbp_dH + xbp_H**2 * xcp_dH) / (toa * xap_H * xcp_H - xbp_H * xcp_H + 1)**2 
+     
+    # -1 * (-toa * xap_dH - 2 * toa * xap_H * xbp_H * xcp_dH + toa**2 * xap_H**2 * xcp_dH + xbp_dH + xbp_H**2 * xcp_dH)
+    above = (toa_xap_dH + 2 * toa_xap_H * xbp_H_xcp_dH - toa_xap_H_2 * xcp_dH -  xbp_dH - xbp_H_xcp_dH * xbp_H)
+     
+    # (toa_xap_H * xcp_H - xbp_H * xcp_H + 1)**2
+    bottom = -2 * toa_xap_H * xbp_H * xcp_H_2 + toa_xap_H_2 * xcp_H_2 + 2 * toa_xap_H * xcp_H +  xbp_H_2 * xcp_H_2 - 2 * xbp_H * xcp_H + 1
+
+    dH = above / bottom
+
+    #full_dJ  = np.sum(dH, axis=0)
+
+    return sur_ref, dH
+
+@jit(nopython=True)
+def choose_random_pixs(mask, pts, aero_res, pix_res, pix_area):
+       
+    sels = np.zeros((2, 4, pts[0].shape[0]))
+    #selys = np.zeros((4, pts[0].shape[0]))
+
+    for i in range(len(pts[0])):
+        pt         = pts[:,i]
+        x_start    = pt[0] * pix_area
+        y_start    = pt[1] * pix_area
+        sub        = mask [x_start : x_start + pix_area,  y_start : y_start + pix_area]
+        indx, indy = np.where(sub)
+        ind        = np.arange(len(indx))
+        np.random.shuffle(ind)
+        sels[0, :, i] = int(pt[0] * pix_area) + indx[ind[:4]]
+        sels[1, :, i] = int(pt[1] * pix_area) + indy[ind[:4]]
+     
+    return sels
+
+def temp_cost(p, toas, emus, auxs, masks, pix_res, aero_res, bands, target_mask):
+    
+    aero_shape = auxs[0].sza.shape     
+    toa_shape  = toas[0][0].shape
+    pix_area   = int(np.ceil(aero_res / pix_res))
+    ratx, raty = int(aero_shape[0] * pix_area), int(aero_shape[1] * pix_area)
+    
+    temp = np.zeros((ratx, raty)).astype(bool)     
+    temp[:toa_shape[0], :toa_shape[1]] = target_mask
+                                                       
+    temp = temp.reshape(aero_shape[0], pix_area, aero_shape[1], pix_area).sum(axis = (1,3))
+    pts  = np.array(np.where(temp>=4))                             
+
+    selxs , selys = choose_random_pixs(target_mask, pts, aero_res, pix_res, pix_area).astype(int)
+
+    all_surs    = []
+    all_surs_dH = []
+    valid_masks = []   
+    for _, toa in enumerate(toas):                 
+        emu = emus[_]                  
+        aux = auxs[_]          
+        mask = masks[_]
+        
+        mm   = mask[selxs[0],  selys[0]] & mask[selxs[1],  selys[1]] & mask[selxs[2],  selys[2]] & mask[selxs[3],  selys[3]]
+        selx = selxs[:,mm]
+        sely = selys[:,mm]
+     
+        pts  = (selx[0] * pix_res / aero_res).astype(int), (sely[0] * pix_res / aero_res).astype(int)
+        
+        size   = aux.sza.size                    
+        shape  = aux.sza.shape                   
+
+        pp     = p[_ * size * 2 : (_+1) * size * 2].reshape(2, shape[0], shape[1])
+                                                 
+        aot    = pp[0]               [   pts[0], pts[1]] 
+        tcwv   = pp[1]               [   pts[0], pts[1]]
+        sza    = np.array(aux.sza)   [   pts[0], pts[1]] 
+        vza    = np.array(aux.vza)   [:, pts[0], pts[1]] 
+        raa    = np.array(aux.raa)   [:, pts[0], pts[1]] 
+        ele    = np.array(aux.ele)   [   pts[0], pts[1]]
+        tco3   = np.array(aux.priors)[2, pts[0], pts[1]]
+        X      = [sza, vza, raa, aot, tcwv, tco3, ele]
+        xap_Hs, xbp_Hs, xcp_Hs, xap_dHs, xbp_dHs, xcp_dHs  = predic_xps_all(X, emu)
+        surs = 0       
+        dHs  = 0               
+        for i in range(4):
+            sur, dH = cal_sur(xap_Hs, xbp_Hs, xcp_Hs, xap_dHs, xbp_dHs, xcp_dHs, toa[bands][:, selx[i], sely[i]].data)
+            surs += sur
+            dHs  += dH
+        surs /= 4
+        dHs  /= 4
+        temp = np.zeros((7,) + aero_shape + (1,))
+        temp[:, pts[0], pts[1]] = surs
+        all_surs.append(temp)   
+        temp = np.zeros((7,) + aero_shape + (2,))
+        temp[:, pts[0], pts[1]] = dH
+        all_surs_dH.append(temp)
+
+        valid_mask = np.zeros(aero_shape)
+        valid_mask[pts[0], pts[1]] = 1
+        valid_masks.append(valid_mask)       
+    return all_surs, all_surs_dH, valid_masks
+
+
+def temporal_cost(p, s2_toas, s2_emus, s2_auxs, masks, l8_toas,l8_emus, l8_auxs, pix_res, aero_res, target_mask):
+    size = s2_auxs[0].sza.size 
+    
+    s2_rets = temp_cost(p[:2*len(s2_toas)*size], s2_toas,s2_emus, s2_auxs, masks[:len(s2_toas)], pix_res, aero_res, [0, 1, 2, 3, 8, 11, 12], ~target_mask)
+    l8_rets = temp_cost(p[2*len(s2_toas)*size:], l8_toas,l8_emus, l8_auxs, masks[len(s2_toas):], pix_res, aero_res, [0, 1, 2, 3, 4,  5,  6], ~target_mask)
+    
+    surs      = np.array(s2_rets[0] + l8_rets[0])#.sum(axis=0)
+    surs_dH   = np.array(s2_rets[1] + l8_rets[1])#.sum(axis=0)
+    counts    = np.array(s2_rets[2] + l8_rets[2])#.sum(axis=0)
+    count_sum = counts.sum(axis=0)[None, ..., None]
+    mean_surs = surs.sum(axis=0)    / count_sum
+    mean_dHs  = surs_dH.sum(axis=0) / count_sum
+
+    Js         = 0
+    dJs        = 0
+    for i in range(len(surs)):
+        diff = surs[i] - mean_surs
+        J    = 0.5 * diff**2
+        dJ   = diff * (surs_dH[i] - mean_dHs)   
+        J [:, counts[i] == 0] = 0
+        dJ[:, counts[i] == 0] = 0
+        Js   += J
+        dJs  += dJ
+
+    return Js.sum(axis=(0,3)), dJs.sum(axis=0).T
+
+def cost_cost(p, s2_toas, s2_emus, s2_auxs, masks, l8_toas,l8_emus, l8_auxs, pix_res, aero_res, target_mask):
+    
+    gamma = 10
+    smooth_J, smooth_dJ = smooth_cost(p, s2_auxs + l8_auxs, gamma)
+    prior_J, prior_dJ   = prior_cost( p, s2_auxs + l8_auxs)
+    temp_J, temp_dJ     = temporal_cost(p, s2_toas, s2_emus, s2_auxs, masks, l8_toas,l8_emus, l8_auxs, pix_res, aero_res, target_mask)
+    obs_J,  obs_dJ      = obs_cost     (p, s2_obs + l8_obs, s2_emus + l8_emus, s2_auxs + l8_auxs, pix_res, aero_res)
+    J  = smooth_J + prior_J + temp_J + obs_J 
+    dJ = smooth_dJ + prior_dJ + temp_dJ + obs_dJ
+    return J, dJ
+
+
 
 
 
 
     
-    
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
