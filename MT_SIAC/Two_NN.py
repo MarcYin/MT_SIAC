@@ -1,11 +1,12 @@
 import numpy as np
 from numba import jit
-from numba import jit
+#from functools import partial
+#from multiprocessing import Pool, cpu_count
 # the forward and backpropogation 
 # are from https://medium.com/unit8-machine-learning-publication/computing-the-jacobian-matrix-of-a-neural-network-in-python-4f162e5db180
 # but added jit for faster speed in the calculation
 
-@jit(nopython=True)
+@jit(nopython=True)#, cache=True, parallel=True)
 def affine_forward(x, w, b):
     """
     Forward pass of an affine layer
@@ -18,7 +19,7 @@ def affine_forward(x, w, b):
     cache = (x, w)
     return out, cache
 
-@jit(nopython=True)
+@jit(nopython=True)#, cache=True, parallel=True)
 def affine_backward(dout, cache):
     """
     Backward pass for an affine layer.
@@ -33,7 +34,7 @@ def affine_backward(dout, cache):
     dx = np.dot(dout, w.T)
     return dx
 
-@jit(nopython=True)
+@jit(nopython=True)#, cache=True, parallel=True)
 def relu_forward(x):
     """ Forward ReLU
     """
@@ -41,7 +42,7 @@ def relu_forward(x):
     cache = x
     return out, cache
 
-@jit(nopython=True)
+@jit(nopython=True)#, cache=True, parallel=True)
 def relu_backward(dout, cache):
     """
     Backward pass of ReLU
@@ -54,7 +55,7 @@ def relu_backward(dout, cache):
     dx = dout * np.where(x > 0, np.ones(x.shape).astype(np.float32), np.zeros(x.shape).astype(np.float32))
     return dx
 
-@jit(nopython=True)
+@jit(nopython=True)#, cache=True, parallel=True)
 def sigmod_forward(x):
     """ Forward sigmod
     """
@@ -84,6 +85,60 @@ def forward_backward(x, Hidden_Layers, Output_Layers, cal_jac=False):
         
         rets.append(ret)
     return rets
+'''
+def _forward_backward(x, Hidden_Layers, output_layer, cal_jac=False): 
+    layer_to_cache = dict()  # for each layer, we store the cache needed for backward pass 
+    [[w1, b1], [w2, b2]] = Hidden_Layers
+    a1, cache_a1 = affine_forward(x, w1, b1) 
+    r1, cache_r1 = relu_forward(a1) 
+    a2, cache_a2 = affine_forward(r1, w2, b2) 
+    w3, b3 = output_layer
+    r3, cache_r3 = relu_forward(a2)
+    out, cache_out = affine_forward(r3, w3, b3)
+    if cal_jac:         
+        dout = affine_backward(np.ones_like(out), cache_out)
+        dout = relu_backward(dout, cache_r3) 
+        dout = affine_backward(dout, cache_a2) 
+        dout = relu_backward(dout, cache_r1) 
+        dx = affine_backward(dout, cache_a1)
+        ret = [out, dx] 
+    else:     
+        ret = out       
+    return ret
+
+def parallel_predict(x, Hidden_Layers, Output_Layers, cal_jac=False):
+    x = np.array(x).astype(np.float32)
+    outs = []
+    for output_layer in Output_Layers:
+        par = partial(_forward_backward,  Hidden_Layers=Hidden_Layers, output_layer=output_layer, cal_jac=cal_jac)
+        cpus = cpu_count()
+        if x.shape[0]>120:
+            subs = np.array_split(x, cpus, axis=0)
+            p = Pool(cpus)
+            rets = p.map(par, subs)
+            p.close()
+            p.join()
+            out = []
+            dx  = []
+            for i in range(cpus):
+                ret = rets[i]
+                if cal_jac:
+                    out.append(ret[0])
+                    dx.append( ret[1])
+                else:
+                    out.append(ret)
+            out = np.concatenate(out)
+            if cal_jac:
+                dx  = np.concatenate(dx) 
+                ret = [out, dx]      
+            else:
+                ret = out  
+        else:
+            ret = par(x)
+        outs.append(ret)
+
+    return outs
+'''     
 
 def training(X, targs, nodes = 64, epochs = 2000, batch_size=60):
     try:

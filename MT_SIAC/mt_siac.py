@@ -13,6 +13,7 @@ import pandas as pd
 import numpy as np
 from glob import glob
 from Two_NN import Two_NN
+from smoothn import smoothn
 from functools import partial
 from Get_S2 import get_s2_files
 from get_MCD43 import get_mcd43
@@ -21,14 +22,25 @@ from scipy import ndimage, signal
 from scipy.stats import linregress
 from shapely.geometry import Point
 from collections import namedtuple
+from scipy import optimize, interpolate
 from s2_preprocessing import s2_pre_processing
 from l8_preprocessing import l8_pre_processing
 from scipy.interpolate import NearestNDInterpolator
-from skimage.morphology import disk, binary_dilation, binary_closing
+from skimage.morphology import disk, binary_dilation, binary_closing, binary_opening
 procs =  psutil.cpu_count()
 file_path = os.path.dirname(os.path.realpath(__file__))
 from create_logger import create_logger
-logger = create_logger()
+
+class bcolors:
+    HEADER = '\033[95m'
+    BLUE = '\033[94m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
 
 sites = [i.split('/')[-2] for i in glob('/data/nemesis/acix_2/S2s_30/*/')] 
 
@@ -93,17 +105,17 @@ def pre_processing(s2_fnames, l8_fnames):
         l8_files.append(ret[0])
     return s2_files, l8_files
 
-def _find_around_files(site):                                      
-    f = np.load('S2_files_to_be_down.npz')
-    fs = [i[0] for i in f.f.rets]
-    s2_files, l8_files, s2_times, l8_times = do_one_site(site)
-    res = []           
-    tiles = np.unique([i.split('_')[-2] for i in s2_files]).tolist()
-    for i in s2_times + l8_times:
-        all_time  = [i+ datetime.timedelta(days=ii) for ii in range(-20, 20)]
-        need_files = [j for j in fs if (datetime.datetime.strptime(j[11:19], '%Y%m%d') in all_time) & (j[38:44] in tiles)]
-        res += need_files   
-    return np.unique(res).tolist()
+# def _find_around_files(site):                                      
+#     f = np.load('S2_files_to_be_down.npz')
+#     fs = [i[0] for i in f.f.rets]
+#     s2_files, l8_files, s2_times, l8_times = do_one_site(site)
+#     res = []           
+#     tiles = np.unique([i.split('_')[-2] for i in s2_files]).tolist()
+#     for i in s2_times + l8_times:
+#         all_time  = [i+ datetime.timedelta(days=ii) for ii in range(-20, 20)]
+#         need_files = [j for j in fs if (datetime.datetime.strptime(j[11:19], '%Y%m%d') in all_time) & (j[38:44] in tiles)]
+#         res += need_files   
+#     return np.unique(res).tolist()
 
 
 def find_around_files(site):
@@ -114,10 +126,10 @@ def find_around_files(site):
         s2_fnames = [] 
         l8_fnames = []
         for j in s2_times: 
-            if abs((j - i).days)<20: 
+            if abs((j - i).days)<15: 
                 s2_fnames.append(s2_files[s2_times.index(j)]) 
         for k in l8_times: 
-            if abs((k - i).days)<20: 
+            if abs((k - i).days)<15: 
                 l8_fnames.append(l8_files[l8_times.index(k)]) 
         res.append([aoi, s2_files[s2_times.index(i)], s2_fnames, l8_fnames])
     return res
@@ -160,11 +172,14 @@ def get_boa(mcd43_dir, boa_bands, obs_time, outputBounds, dstSRS, temporal_filli
     qa_temp = 'MCD43_%s_BRDF_Albedo_Band_Mandatory_Quality_Band%d.vrt'
     da_temp = 'MCD43_%s_BRDF_Albedo_Parameters_Band%d.vrt'
     doy = obs_time.strftime('%Y%j')
-    if temporal_filling == True:
-        temporal_filling = 16
+    #print(temporal_filling)
+    #if temporal_filling == True:
+    #    temporal_filling = 16
+    #print(temporal_filling)
     if temporal_filling:
         days   = [(obs_time - datetime.timedelta(days = int(i))) for i in np.arange(temporal_filling, 0, -1)] + \
                  [(obs_time + datetime.timedelta(days = int(i))) for i in np.arange(0, temporal_filling+1,  1)]
+        #print(days)
         fnames = []
         for temp in [da_temp, qa_temp]:                                                                                    
             for day in days:
@@ -174,25 +189,24 @@ def get_boa(mcd43_dir, boa_bands, obs_time, outputBounds, dstSRS, temporal_filli
     else:
         fnames = []
         for temp in [da_temp, qa_temp]:
-            for band in self.boa_bands:
-                    fname = MCD43_dir + '/'.join([datetime.strftime(obs_time, '%Y-%m-%d'), temp%(doy, band)])
+            for band in boa_bands:
+                    fname = mcd43_dir + '/'.join([datetime.datetime.strftime(obs_time, '%Y-%m-%d'), temp%(doy, band)])
                     fnames.append(fname)
     das, ws = read_MCD43(fnames, dstSRS, outputBounds) 
     return das, ws
 
 
-def smooth(da_w):
-    da, w = da_w
-    if (da.shape[-1]==0) | (w.shape[-1]==0):
-        return da, w
-    data  = np.array(smoothn(da, s=10., smoothOrder=1., axis=0, TolZ=0.001, verbose=False, isrobust=True, W = w))[[0, 3],]                                                                                                                          
-    return data[0], data[1]
+# def smooth(da_w):
+#     da, w = da_w
+#     if (da.shape[-1]==0) | (w.shape[-1]==0):
+#         return da, w
+#     data  = np.array(smoothn(da, s=10., smoothOrder=1., axis=0, TolZ=0.001, verbose=False, isrobust=True, W = w))[[0, 3],]                                                                                                                          
+#     return data[0], data[1]
 
 
-ret = find_around_files(sites[1])
-fs = ret[0]
 
-def read_l8(l8s, pix_res, dstSRS, outputBounds, vrt_dir):
+
+def read_l8(l8s, pix_res, dstSRS, outputBounds, vrt_dir, temporal_window ):
     l8_toas = []                             
     l8_surs = []                             
     l8_uncs = []                             
@@ -221,7 +235,7 @@ def read_l8(l8s, pix_res, dstSRS, outputBounds, vrt_dir):
             toas.append(np.ma.array(data, mask = cloud_mask))
         l8_toas.append(np.ma.array(toas))    
         boa_bands = [3, 4, 1, 2, 5, 6]       
-        das, qas = get_boa(vrt_dir, boa_bands, i.obs_time, outputBounds, dstSRS, temporal_filling = 4)
+        das, qas = get_boa(vrt_dir, boa_bands, i.obs_time, outputBounds, dstSRS, temporal_filling = temporal_window )
         saa, sza = gdal.Warp('', i.sun_angs, format = 'MEM', outputBounds = outputBounds,
                              xRes = 500, yRes = 500, dstSRS = dstSRS, dstNodata=-32767, outputType = gdal.GDT_Int16).ReadAsArray() / 100
         new_shp  = saa.shape                 
@@ -258,7 +272,7 @@ def read_l8(l8s, pix_res, dstSRS, outputBounds, vrt_dir):
         l8_uncs.append(l8_unc)  
     return l8_toas, l8_surs, l8_uncs, l8_clds
 
-def read_s2(s2s, pix_res, dstSRS, outputBounds, vrt_dir):
+def read_s2(s2s, pix_res, dstSRS, outputBounds, vrt_dir, temporal_window):
     s2_toas = []
     s2_surs = []                                                                                                                                                          
     s2_uncs = []                                
@@ -277,7 +291,7 @@ def read_s2(s2s, pix_res, dstSRS, outputBounds, vrt_dir):
             toas.append(np.ma.array(data, mask = cloud_mask))
         s2_toas.append(np.ma.array(toas))       
         boa_bands = [3, 4, 1, 2, 5, 6]          
-        das, qas = get_boa(vrt_dir, boa_bands, i.obs_time, outputBounds, dstSRS, temporal_filling = 4)
+        das, qas = get_boa(vrt_dir, boa_bands, i.obs_time, outputBounds, dstSRS, temporal_filling = temporal_window )
         saa, sza = gdal.Warp('', i.sun_angs, format = 'MEM', outputBounds = outputBounds, 
                              xRes = 500, yRes = 500, dstSRS = dstSRS, dstNodata=-32767, outputType = gdal.GDT_Int16).ReadAsArray() / 100
         new_shp  = saa.shape                    
@@ -327,11 +341,11 @@ def redo_cloud_shadow(s2_toas, l8_toas, s2_clds, l8_clds):
         vis_diff = diff[:3].mean(axis=0)        
         certain_cloud = (s2_clds[_] > 30) & (vis_diff > 0.075)
         certain_cloud = binary_dilation(certain_cloud, selem = struct).astype(certain_cloud.dtype) & (vis_diff>0.025) & (s2_clds[_] > 20)
-        certain_cloud = binary_closing(certain_cloud)
+        certain_cloud = binary_opening(certain_cloud)
         certain_cloud[vis_diff.mask] = (s2_clds[_]>40)[vis_diff.mask]
         nir_diff = diff[3:].mean(axis=0)        
         shadow   = nir_diff < -0.1              
-        shadow   = binary_closing(shadow) & (~certain_cloud)
+        shadow   = binary_opening(shadow) & (~certain_cloud)
         s2_clouds.append(certain_cloud)         
         s2_shadows.append(shadow)               
         s2_changes.append(diff)
@@ -345,13 +359,13 @@ def redo_cloud_shadow(s2_toas, l8_toas, s2_clds, l8_clds):
         vis_diff       = diff[:3].mean(axis=0)  
         certain_cloud  = (((l8_clds[_] >> 5) & 3) > 1) & (vis_diff > 0.075)
         certain_cloud  = binary_dilation(certain_cloud, selem = struct).astype(certain_cloud.dtype) & (vis_diff > 0.025) 
-        certain_cloud  = binary_closing(certain_cloud)
+        certain_cloud  = binary_opening(certain_cloud)
         certain_cloud[vis_diff.mask] = (((l8_clds[_] >> 5) & 3) > 0)[vis_diff.mask] 
      
         nir_diff       = diff[3:].mean(axis=0)  
         certain_shadow = (((l8_clds[_] >> 7) & 3) > 1) & (nir_diff < -0.1)
         certain_shadow = binary_dilation(certain_shadow, selem = struct).astype(certain_cloud.dtype) & (nir_diff < -0.025)
-        certain_shadow = binary_closing(certain_shadow) & (~certain_cloud)
+        certain_shadow = binary_opening(certain_shadow) & (~certain_cloud)
         l8_clouds.append(certain_cloud)                                                                                                                                   
         l8_shadows.append(certain_shadow) 
         l8_changes.append(diff)
@@ -378,7 +392,7 @@ def cost(p, toa, sur, pxs, pys, pcxs, pcys, gaus):
     mask         = (point_xs<toa.shape[0]) & (point_xs>0) & (point_ys<toa.shape[1]) & (point_ys>0)
     point_xs     = point_xs[mask]
     point_ys     = point_ys[mask]
-    points       = np.array([np.repeat(point_xs, len(point_ys)), np.tile(point_ys, len(point_xs))]).T
+    points       = np.array([point_xs, point_ys]).T#np.array([np.repeat(point_xs, len(point_ys)), np.tile(point_ys, len(point_xs))]).T
     mask         = (points[:,0]<toa.shape[0]) & (points[:,0]>0) & (points[:,1]<toa.shape[1]) & (points[:,1]>0) 
     conv_toa     = points_convolve(toa, gaus, points)
     mask         = mask & (conv_toa>=0.001)
@@ -393,20 +407,27 @@ def convolve(data, kernel, points):
     kx   = int(np.ceil(kernel.shape[0]/2.))
     ky   = int(np.ceil(kernel.shape[1]/2.))
     rets = np.zeros(len(points)) 
-    padx = int(np.ceil(kernel.shape[0]/2.))
-    pady = int(np.ceil(kernel.shape[1]/2.)) 
+    # padx = int(np.ceil(kernel.shape[0]/2.))
+    # pady = int(np.ceil(kernel.shape[1]/2.)) 
     for _ in range(len(points)): 
         x, y    = points[_]
-        batch   = data[x: x + 2*kx, y: y + 2*ky] 
-        rets[_] = np.nansum(batch[:kernel.shape[0],:kernel.shape[1]]*kernel)
+        batch   = data[x: x + 2*kx, y: y + 2*ky][:kernel.shape[0],:kernel.shape[1]]
+        if batch.size == 0:
+            rets[_] = np.nan
+        else:
+            counts  = np.sum(np.isfinite(batch)*kernel)
+            if counts == 0:
+                rets[_] = np.nan
+            else:
+                rets[_] = np.nansum(batch*kernel) / counts
     return rets
 
 @jit(nopython=True)
 def points_convolve(im, kernel, points): 
     rows, cols     = im.shape
     k_rows, k_cols = kernel.shape
-    padx = int(k_rows/2.)
-    pady = int(k_cols/2.)
+    # padx = int(k_rows/2.)
+    # pady = int(k_cols/2.)
     data = np.zeros((rows + 2*k_rows, cols + 2*k_cols))
     #data = np.pad(im, (2*padx, 2*pady), mode='reflect') 
     data[:rows, :cols] = im
@@ -416,6 +437,8 @@ def do_s2_psf(s2s, s2_toas, s2_clouds, s2_shadows, s2_surs, possible_x_y, struct
     s2_conv_toas = []                    
     s2_cors_surs = []
     s2_cors_pots = []
+    logger = create_logger()
+    logger.propagate = False
     for _, s2_toa in enumerate(s2_toas):      
         sur        = s2_surs[_][0]            
         c_x, c_y   = sur.shape   
@@ -426,14 +449,13 @@ def do_s2_psf(s2s, s2_toas, s2_clouds, s2_shadows, s2_surs, possible_x_y, struct
         bad_pix    = ndimage.binary_dilation(bad_pix, structure = struct, iterations=10)
         good_xy    = (~bad_pix)[pointXs, pointYs]
         p_xs, p_ys = pointXs[good_xy], pointYs[good_xy]
-        p_corse_xs, p_corse_ys = np.array(range(c_x))[good_xy], np.array(range(c_y))[good_xy]
-        p_corse_xs, p_corse_ys = np.repeat(p_corse_xs, len(p_corse_ys)), np.tile(p_corse_ys, len(p_corse_xs))
+        p_corse_xs, p_corse_ys = np.repeat(range(c_x), c_y)[good_xy], np.tile(range(c_y), c_x)[good_xy]
         par = partial(cost, toa = data, sur = s2_surs[_][-1], pxs = p_xs, pys = p_ys, pcxs = p_corse_xs, pcys = p_corse_ys, gaus = gaus)
         p   = Pool()                     
         ret = p.map(par, possible_x_y)        
         p.close()                        
         p.join()                         
-        mind = np.argmin(np.array(ret, dtype=np.object)[:,0])
+        mind = np.nanargmin(np.array(ret, dtype=np.object)[:,0])
         shift_x, shift_y   = possible_x_y[mind]
         un_r, points, mask = ret[mind]   
         logger.info('X_shift: %d, Y_shift: %d, rValue: %.02f'%(shift_x, shift_y, 1-un_r))
@@ -453,7 +475,7 @@ def do_s2_psf(s2s, s2_toas, s2_clouds, s2_shadows, s2_surs, possible_x_y, struct
         s2_cors_pots.append(np.array([p_corse_xs[mask], p_corse_ys[mask]]))
     s2_obss = [] 
     for _, s2_toa in enumerate(s2s):
-        s2_obs = namedtuple('s2_obs', 'conv_toa cors_sur cors_pts')
+        s2_obs = namedtuple('s2_obs', 'cors_sur conv_toa cors_pts')
         sensor = s2_toa[0].split('_MSIL1C_')[0][-3:]
         mask, s2_cors_sur = spectral_mapping(s2_cors_surs[_], s2_conv_toas[_], sensor)
         #s2_cors_surs[_]   = np.array(s2_cors_sur)[:, mask]
@@ -461,13 +483,14 @@ def do_s2_psf(s2s, s2_toas, s2_clouds, s2_shadows, s2_surs, possible_x_y, struct
         #s2_conv_toas[_]   = np.array(s2_conv_toas[_])[:, mask]
         ret = s2_obs(np.array(s2_cors_sur)[:, mask], np.array(s2_conv_toas[_])[:, mask], np.array(s2_cors_pots[_])[:, mask])
         s2_obss.append(ret)
-
     return s2_obss
 
 def do_l8_pdf(l8s, l8_toas, l8_clouds, l8_shadows, l8_surs, possible_x_y, struct, gaus, pointXs, pointYs):    
     l8_conv_toas = []                    
     l8_cors_surs = []
     l8_cors_pots = []
+    logger = create_logger()
+    logger.propagate = False
     for _, l8_toa in enumerate(l8_toas):      
         sur        = l8_surs[_][0]
         c_x, c_y   = sur.shape
@@ -478,14 +501,13 @@ def do_l8_pdf(l8s, l8_toas, l8_clouds, l8_shadows, l8_surs, possible_x_y, struct
         bad_pix    = ndimage.binary_dilation(bad_pix, structure = struct, iterations=10)
         good_xy    = (~bad_pix)[pointXs, pointYs]
         p_xs, p_ys = pointXs[good_xy], pointYs[good_xy]
-        p_corse_xs, p_corse_ys = np.array(range(c_x))[good_xy], np.array(range(c_y))[good_xy]
-        p_corse_xs, p_corse_ys = np.repeat(p_corse_xs, len(p_corse_ys)), np.tile(p_corse_ys, len(p_corse_xs))
+        p_corse_xs, p_corse_ys = np.repeat(range(c_x), c_y)[good_xy], np.tile(range(c_y), c_x)[good_xy]
         par = partial(cost, toa = data, sur = l8_surs[_][-1], pxs = p_xs, pys = p_ys, pcxs = p_corse_xs, pcys = p_corse_ys, gaus = gaus)
         p   = Pool()                     
         ret = p.map(par, possible_x_y)        
         p.close()                        
         p.join()                         
-        mind = np.argmin(np.array(ret, dtype=np.object)[:,0])
+        mind = np.nanargmin(np.array(ret, dtype=np.object)[:,0])
         shift_x, shift_y   = possible_x_y[mind]
         un_r, points, mask = ret[mind]   
         logger.info('X_shift: %d, Y_shift: %d, rValue: %.02f'%(shift_x, shift_y, 1-un_r))
@@ -504,7 +526,7 @@ def do_l8_pdf(l8s, l8_toas, l8_clouds, l8_shadows, l8_surs, possible_x_y, struct
         l8_cors_pots.append(np.array([p_corse_xs[mask], p_corse_ys[mask]]))
     l8_obss = []
     for _, l8_toa in enumerate(l8s):
-        l8_obs = namedtuple('l8_obs', 'conv_toa cors_sur cors_pts')
+        l8_obs = namedtuple('l8_obs', 'cors_sur conv_toa cors_pts')
         sensor = 'L8'
         mask, l8_cors_sur = spectral_mapping(l8_cors_surs[_], l8_conv_toas[_], sensor)
         #l8_cors_surs[_]   = np.array(l8_cors_sur)[:, mask]
@@ -515,9 +537,10 @@ def do_l8_pdf(l8s, l8_toas, l8_clouds, l8_shadows, l8_surs, possible_x_y, struct
     return l8_obss
 
 def cal_psf_points(pix_res, sur_x, sur_y):
-    xstd, ystd   = 260/pix_res, 340/pix_res
-    pointXs     = ((np.arange(sur_x) * 500) // pix_res ) 
-    pointYs     = ((np.arange(sur_y) * 500) // pix_res ) 
+    xstd, ystd      = 260/pix_res, 340/pix_res
+    pointXs         = ((np.arange(sur_x) * 500) // pix_res ) 
+    pointYs         = ((np.arange(sur_y) * 500) // pix_res ) 
+    pointXs,pointYs = np.repeat(pointXs, len(pointYs)), np.tile(  pointYs, len(pointXs))
     gaus         = gaussian(xstd, ystd, norm = True)
  
     possible_x_y = [(np.arange(-25,25), np.arange(-25,25) +i) for i in range(-10, 10)]
@@ -554,11 +577,12 @@ def spectral_mapping(sur, toa, sensor):
         mask = np.zeros(sur.shape[1]).astype(bool)
     return mask, sur
 
-def get_stable_targets(changes, clouds, shadows):
+def get_stable_targets(changes, clouds, shadows, toas):
     stable_targets = []
     for i in range(len(changes)):
+        toa    = toas[i]
         change = np.mean([abs(changes[i][-1]).data + abs(changes[i][-2].data)], axis=0)
-        stable_target = (change < 0.015) & (~clouds[i]) & (~shadows[i]) 
+        stable_target = (change < 0.01) & (~clouds[i]) & (~shadows[i]) & (change / np.mean(toa[-2:].data, axis=0) < 0.1)
         stable_targets.append(stable_target)
     return stable_targets
 
@@ -594,6 +618,7 @@ def read_atmos_piro(cams_dir, pix_res, obs_time, dstSRS, outputBounds):
         offset  = g.GetOffset()            
         scale   = g.GetScale()             
         data    = prior_g.GetRasterBand(int(time_ind+1)).ReadAsArray() * scale + offset
+        data[:] = np.nanmean(data)
         priors.append(data * prior_scales[i])
         #prior_uncs.append(np.ones_like(data)*prior_uncs[i])
     return priors, prior_uncs
@@ -604,31 +629,46 @@ def read_ang(ang, pix_res, dstSRS, outputBounds):
     angs = g.ReadAsArray() / 100.  
     return angs
 
-def prepare_aux(s2s, l8s, pix_res, dstSRS, outputBounds, dem, cams_dir):
+def prepare_aux(s2s, l8s, aero_res, dstSRS, outputBounds, dem, cams_dir, s2_toas, pix_res):
     s2_aux = namedtuple('s2_aux', 'sza vza raa priors prior_uncs ele')
     s2_auxs = []
-    ele = read_ele(dem, pix_res, dstSRS, outputBounds)
+    ele = read_ele(dem, aero_res, dstSRS, outputBounds)
     for s2 in s2s:
-        saa, sza = read_ang(s2.sun_angs, pix_res, dstSRS, outputBounds)
-        priors, prior_uncs = read_atmos_piro(cams_dir, pix_res, s2.obs_time, dstSRS, outputBounds) 
+        saa, sza = read_ang(s2.sun_angs, aero_res, dstSRS, outputBounds)
+        priors, prior_uncs = read_atmos_piro(cams_dir, aero_res, s2.obs_time, dstSRS, outputBounds) 
         vzas = []
         raas = []
         for band in [0, 1, 2, 3, 8, 11, 12]:
-            vaa, vza = read_ang(s2.view_angs[band], pix_res, dstSRS, outputBounds)
+            vaa, vza = read_ang(s2.view_angs[band], aero_res, dstSRS, outputBounds)
             raa      = vaa - saa
             vzas.append(np.cos(np.deg2rad(vza)))          
             raas.append(np.cos(np.deg2rad(raa)))                             
         s2_auxs.append(s2_aux(np.cos(np.deg2rad(sza)), vzas, raas, priors, prior_uncs, ele))
+
+    tcwvs = get_starting_tcwvs(s2_auxs, s2_toas, aero_res, pix_res)                        
+    for _, s2_aux in enumerate(s2_auxs): 
+                            
+        tcwv = tcwvs[_]     
+        median = np.nanmedian(tcwv)
+        mask = (tcwv > 0) & (tcwv < 8)
+        tcwv[~mask] = median
+                            
+        priors        = s2_aux.priors
+        priors[1]     = tcwv    
+        prior_uncs    = s2_aux.prior_uncs
+        prior_uncs[1] = 0.01
+        s2_aux        = s2_aux._replace(priors = priors, prior_uncs = prior_uncs )
+        s2_auxs[_]    = s2_aux 
         
     l8_aux = namedtuple('l8_aux', 'sza vza raa priors prior_uncs ele')                     
     l8_auxs = [] 
     for l8 in l8s:                                                    
-        saa, sza = read_ang(l8.sun_angs, pix_res, dstSRS, outputBounds)
-        priors, prior_uncs = read_atmos_piro(cams_dir, pix_res, l8.obs_time, dstSRS, outputBounds) 
+        saa, sza = read_ang(l8.sun_angs, aero_res, dstSRS, outputBounds)
+        priors, prior_uncs = read_atmos_piro(cams_dir, aero_res, l8.obs_time, dstSRS, outputBounds) 
         vzas = []                                                     
         raas = []
         for band in [0, 1, 2, 3, 4, 5, 6]:                          
-            vaa, vza = read_ang(l8.view_angs[band], pix_res, dstSRS, outputBounds)
+            vaa, vza = read_ang(l8.view_angs[band], aero_res, dstSRS, outputBounds)
             raa      = vaa - saa
             vzas.append(np.cos(np.deg2rad(vza)))           
             raas.append(np.cos(np.deg2rad(raa)))                               
@@ -695,11 +735,10 @@ def get_obs(s2_files, l8_files):
         l8s.append(l8_obs(dat[0], dat[1], dat[2], dat[3], dat[4], obs_time)) 
     return s2s, s2_times, l8s, l8_times
 
-def combine_mask(clouds, shadows, target_mask):
+def combine_mask(target_mask, stable_targets):
     masks = []
-    for i in range(len(clouds)):
-        mask = ~(clouds[i] | shadows[i] | target_mask)
-        masks.append(mask)
+    for stable_target in stable_targets:
+        masks.append(stable_target & target_mask)
     return masks
         
 
@@ -716,65 +755,6 @@ def grid_conversion(array, new_shape):
     return znew
 
 
-def do_one_s2(fs):
-
-    aoi, s2_file, s2_fnames, l8_fnames = fs
-    s2_files, l8_files = pre_processing(s2_fnames, l8_fnames)
-
-    pix_res = 30
-    dstSRS, outputBounds = get_bounds(aoi, s2_files[0][2][2], pix_res)
-
-    s2s, s2_times, l8s, l8_times = get_obs(s2_files, l8_files)
-    obs_times = np.unique(s2_times + l8_times).tolist()
-    vrt_dir = get_mcd43(aoi, obs_times, '/home/ucfafyi/hep/MCD43/', temporal_window = 4, jasmin = True, vrt_dir='/home/ucfafyi/MCD43_VRT/')
-    
-    s2_toas, s2_surs, s2_uncs, s2_clds = read_s2(s2s, pix_res, dstSRS, outputBounds, vrt_dir)
-    l8_toas, l8_surs, l8_uncs, l8_clds = read_l8(l8s, pix_res, dstSRS, outputBounds, vrt_dir)
-    s2_clouds, s2_shadows,s2_changes, l8_clouds, l8_shadows, l8_changes = redo_cloud_shadow(s2_toas, l8_toas, s2_clds, l8_clds)
-
-    sur_x, sur_y = s2_surs[0][0].shape
-    possible_x_y, struct, gaus, pointXs, pointYs = cal_psf_points(pix_res, sur_x, sur_y)
-    s2_obs = do_s2_psf(s2s, s2_toas, s2_clouds, s2_shadows, s2_surs, possible_x_y, struct, gaus, pointXs, pointYs) 
-    l8_obs = do_l8_pdf(l8s, l8_toas, l8_clouds, l8_shadows, l8_surs, possible_x_y, struct, gaus, pointXs, pointYs)
-
-    cams_dir  = '/vsicurl/http://www2.geog.ucl.ac.uk/~ucfafyi/cams/'
-    dem       = '/vsicurl/http://www2.geog.ucl.ac.uk/~ucfafyi/eles/global_dem.vrt'
-
-    aero_res = 250
-    s2_auxs, l8_auxs = prepare_aux(s2s, l8s, aero_res, dstSRS, outputBounds, dem, cams_dir)
-    s2_emus, l8_emus = load_emus(s2s, l8s)
-
-    obs_nums         = np.array(s2_clouds + l8_clouds + s2_shadows + l8_shadows).astype(int).sum(axis=0)
-    stable_targets   = get_stable_targets(s2_changes + l8_changes, s2_clouds + l8_clouds, s2_shadows + l8_shadows)
-    target_mask      = (obs_nums > 0.5*(len(s2s) + len(l8s))) | (np.array(stable_targets).astype(int).sum(axis=0)<=1)
-
-    masks = combine_mask(s2_clouds + l8_clouds, s2_shadows + l8_shadows, target_mask)   
-    
-
-
-def predic_xps(X, emus):
-    sza, vza, raa, aot, tcwv, tco3, ele = X
-    xap_Hs  = []
-    xbp_Hs  = []
-    xcp_Hs  = []
-    xap_dHs = []
-    xbp_dHs = []
-    xcp_dHs = []
-    for i in range(6):
-        xx    = np.array([sza, vza[i], raa[i], aot, tcwv, tco3, ele]).T
-        H, dH = emus.xap[i+1].predict(xx, cal_jac=True)[0]
-        xap_Hs.append(H)
-        xap_dHs.append(dH[:,3:5])
-
-        H, dH = emus.xbp[i+1].predict(xx, cal_jac=True)[0]
-        xbp_Hs.append(H)
-        xbp_dHs.append(dH[:,3:5])
-
-        H, dH = emus.xcp[i+1].predict(xx, cal_jac=True)[0]
-        xcp_Hs.append(H)
-        xcp_dHs.append(dH[:,3:5])
-
-    return np.array(xap_Hs), np.array(xbp_Hs), np.array(xcp_Hs), np.array(xap_dHs), np.array(xbp_dHs), np.array(xcp_dHs)
 
 @jit(nopython=True)
 def object_jac(xap_H, xbp_H, xcp_H, xap_dH, xbp_dH, xcp_dH, toa, sur, band_weight):
@@ -835,40 +815,10 @@ def remap_J_dJ(J, dJ, pts, aero_res, shape):
 
     return full_J, full_dJ
 
-def obs_cost(p, obs, emus, auxs, pix_res, aero_res):
-    alpha = -1.6
-    band_weight = np.array([0.469, 0.555, 0.645, 0.859, 1.64 , 2.13 ])**alpha  
-    Js  = 0
-    dJs = 0
-    for _, ob in enumerate(obs):        
-        emu = emus[_]
-        aux = auxs[_]
-        pts = (ob.cors_pts * 500 / aero_res).astype(int)
-    
-        size   = aux.sza.size
-        shape  = aux.sza.shape
-        pp     = p[_ * size * 2 : (_+1) * size * 2].reshape(2, shape[0], shape[1])
-    
-        aot    = pp[0]               [   pts[0], pts[1]] 
-        tcwv   = pp[1]               [   pts[0], pts[1]] 
-        sza    = np.array(aux.sza)   [   pts[0], pts[1]] 
-        vza    = np.array(aux.vza)   [:, pts[0], pts[1]] 
-        raa    = np.array(aux.raa)   [:, pts[0], pts[1]] 
-        ele    = np.array(aux.ele)   [   pts[0], pts[1]]
-        tco3   = np.array(aux.priors)[2, pts[0], pts[1]]
-        X      = [sza, vza, raa, aot, tcwv, tco3, ele]
-        xap_Hs, xbp_Hs, xcp_Hs, xap_dHs, xbp_dHs, xcp_dHs  = predic_xps(X, emu)
-        
-        J, dJ  = object_jac(xap_Hs, xbp_Hs, xcp_Hs, xap_dHs, xbp_dHs, xcp_dHs, ob.conv_toa, ob.cors_sur, band_weight)       
-        J, dJ = remap_J_dJ(J, dJ, pts, aero_res, shape)
-        Js  += J
-        dJs += dJ
-    return Js, dJs
-
 @jit(nopython=True)
 def prior_jac(pp, priors, prior_uncs):
     shape = priors[0].shape          
-    size  = priors[0].size 
+    # size  = priors[0].size 
     unc_2 = prior_uncs[:2]**2
     dif_1 = pp[0] - priors[0]
     dif_2 = pp[1] - priors[1]
@@ -880,15 +830,15 @@ def prior_jac(pp, priors, prior_uncs):
 
 def prior_cost(p, auxs):
     Js  = 0
-    dJs = 0
+    dJs = []
     size = auxs[0].sza.size
     shape = auxs[0].sza.shape
     for i, aux in enumerate(auxs):
         pp    = p[i * size * 2 : (i+1) * size * 2].reshape(2, shape[0], shape[1])
         J, dJ = prior_jac(pp, aux.priors, np.array(aux.prior_uncs))
         Js  +=  J
-        dJs += dJ
-    return Js, dJs
+        dJs.append(dJ)
+    return Js, np.array(dJs)
 
 @jit(nopython=True) 
 def smoothness (x, sigma_model_2):
@@ -908,20 +858,22 @@ def smoothness (x, sigma_model_2):
     
     return J, 2 * dJ
 
-def smooth_cost(p, auxs, gamma):
+def smooth_cost(p, auxs, gamma1, gamma2):
     Js  = 0
-    dJs = 0
-    inv_gamma = (1 / gamma)**2
+    dJs = []
+    inv_gamma1 = (1 / gamma1)**2
+    inv_gamma2 = (1 / gamma2)**2
     for i, aux in enumerate(auxs):
         size  = aux.sza.size        
         shape = aux.sza.shape 
         pp    = p[i * size * 2 : (i+1) * size * 2].reshape(2, shape[0], shape[1])
-        J_aot,  dJ_aot  = smoothness(pp[0],  inv_gamma)
-        J_tcwv, dJ_tcwv = smoothness(pp[1],  inv_gamma)
+        J_aot,  dJ_aot  = smoothness(pp[0],  inv_gamma1)
+        J_tcwv, dJ_tcwv = smoothness(pp[1],  inv_gamma2)
         J, dJ      = J_aot + J_tcwv, np.array([dJ_aot, dJ_tcwv])
         Js  += J         
-        dJs +=dJ       
-    return Js, dJs
+        #dJs +=dJ       
+        dJs.append(dJ)
+    return Js, np.array(dJs)
 
 
 def predic_xps_all(X, emus):                                                                                                                                                  
@@ -932,7 +884,7 @@ def predic_xps_all(X, emus):
     xap_dHs = []       
     xbp_dHs = []       
     xcp_dHs = []       
-    for i in range(7): 
+    for i in range(vza.shape[0]): 
         xx    = np.array([sza, vza[i], raa[i], aot, tcwv, tco3, ele]).T
         H, dH = emus.xap[i].predict(xx, cal_jac=True)[0]
         xap_Hs.append(H)
@@ -997,40 +949,82 @@ def choose_random_pixs(mask, pts, aero_res, pix_res, pix_area):
      
     return sels
 
-def temp_cost(p, toas, emus, auxs, masks, pix_res, aero_res, bands, target_mask):
+# def obs_cost(p, obs, emus, auxs, pix_res, aero_res):
+#     alpha = -1.6
+#     band_weight = np.array([0.469, 0.555, 0.645, 0.859, 1.64 , 2.13 ])**alpha  
+#     Js  = 0
+#     dJs = 0
+#     for _, ob in enumerate(obs):        
+#         emu = emus[_]
+#         aux = auxs[_]
+#         pts = (ob.cors_pts * 500 / aero_res).astype(int)
     
-    aero_shape = auxs[0].sza.shape     
-    toa_shape  = toas[0][0].shape
-    pix_area   = int(np.ceil(aero_res / pix_res))
+#         size   = aux.sza.size
+#         shape  = aux.sza.shape
+#         pp     = p[_ * size * 2 : (_+1) * size * 2].reshape(2, shape[0], shape[1])
+    
+#         aot    = pp[0]               [   pts[0], pts[1]] 
+#         tcwv   = pp[1]               [   pts[0], pts[1]] 
+#         sza    = np.array(aux.sza)   [   pts[0], pts[1]] 
+#         vza    = np.array(aux.vza)   [:, pts[0], pts[1]] 
+#         raa    = np.array(aux.raa)   [:, pts[0], pts[1]] 
+#         ele    = np.array(aux.ele)   [   pts[0], pts[1]]
+#         tco3   = np.array(aux.priors)[2, pts[0], pts[1]]
+#         X      = [sza, vza, raa, aot, tcwv, tco3, ele]
+#         xap_Hs, xbp_Hs, xcp_Hs, xap_dHs, xbp_dHs, xcp_dHs  = predic_xps(X, emu)
+        
+#         J, dJ  = object_jac(xap_Hs, xbp_Hs, xcp_Hs, xap_dHs, xbp_dHs, xcp_dHs, ob.conv_toa, ob.cors_sur, band_weight)       
+#         J, dJ = remap_J_dJ(J, dJ, pts, aero_res, shape)
+#         Js  += J
+#         dJs += dJ                                                                                                                                                         
+#     return Js, dJs
+
+
+def get_targets(obs, masks, pix_res, aero_res, target_mask, aero_shape, toa_shape):
+
+    to_compute  = []
+    coarse_inds = []
+    fine_inds   = []
+    fine_xys    = []
+    #aero_shape = auxs[0].sza.shape                                           
+    #toa_shape  = toas[0][0].shape
+    pix_area   = int(np.ceil(aero_res / pix_res))                            
     ratx, raty = int(aero_shape[0] * pix_area), int(aero_shape[1] * pix_area)
-    
-    temp = np.zeros((ratx, raty)).astype(bool)     
-    temp[:toa_shape[0], :toa_shape[1]] = target_mask
-                                                       
+                    
+    temp = np.zeros((ratx, raty)).astype(bool)                               
+    temp[:toa_shape[0], :toa_shape[1]] = target_mask                         
+                                                                             
     temp = temp.reshape(aero_shape[0], pix_area, aero_shape[1], pix_area).sum(axis = (1,3))
-    pts  = np.array(np.where(temp>=4))                             
-
+    pts  = np.array(np.where(temp>=4))                                       
+                    
     selxs , selys = choose_random_pixs(target_mask, pts, aero_res, pix_res, pix_area).astype(int)
-
-    all_surs    = []
-    all_surs_dH = []
-    valid_masks = []   
-    for _, toa in enumerate(toas):                 
-        emu = emus[_]                  
-        aux = auxs[_]          
-        mask = masks[_]
-        
+    for _, ob in enumerate(obs):                                                     
+        mask = masks[_]                                                                
         mm   = mask[selxs[0],  selys[0]] & mask[selxs[1],  selys[1]] & mask[selxs[2],  selys[2]] & mask[selxs[3],  selys[3]]
-        selx = selxs[:,mm]
-        sely = selys[:,mm]
+        selx = selxs[:,mm]                                                             
+        sely = selys[:,mm]                                                             
+      
+        pts1 = (selx[0] * pix_res / aero_res).astype(int), (sely[0] * pix_res / aero_res).astype(int)
+        pts2 = (ob.cors_pts * 500 / aero_res).astype(int)                          
+        ppts = np.hstack([pts1, pts2])
+        inds, inv = np.unique(ppts, axis=1, return_inverse=True)
+
+        to_compute.append(inds)
+        fine_inds.append(  inv[:len(pts1[0])])
+        coarse_inds.append(inv[len(pts1[0]):])
+        fine_xys.append(np.array([selx, sely]))
+    return to_compute, fine_inds, coarse_inds, fine_xys
      
-        pts  = (selx[0] * pix_res / aero_res).astype(int), (sely[0] * pix_res / aero_res).astype(int)
-        
+
+def get_xps(p, emus, auxs, to_compute):
+    xps    = []
+    for _, aux in enumerate(auxs):                 
+        emu = emus[_]                  
         size   = aux.sza.size                    
         shape  = aux.sza.shape                   
-
         pp     = p[_ * size * 2 : (_+1) * size * 2].reshape(2, shape[0], shape[1])
-                                                 
+        pts    = to_compute[_]                                                 
+
         aot    = pp[0]               [   pts[0], pts[1]] 
         tcwv   = pp[1]               [   pts[0], pts[1]]
         sza    = np.array(aux.sza)   [   pts[0], pts[1]] 
@@ -1039,15 +1033,46 @@ def temp_cost(p, toas, emus, auxs, masks, pix_res, aero_res, bands, target_mask)
         ele    = np.array(aux.ele)   [   pts[0], pts[1]]
         tco3   = np.array(aux.priors)[2, pts[0], pts[1]]
         X      = [sza, vza, raa, aot, tcwv, tco3, ele]
-        xap_Hs, xbp_Hs, xcp_Hs, xap_dHs, xbp_dHs, xcp_dHs  = predic_xps_all(X, emu)
+        xps.append(predic_xps_all(X, emu))
+    return xps
+
+def coarse_cost(xps, obs, coarse_inds, to_compute, band_weight, aero_shape, aero_res):
+    Js  = 0
+    dJs = []
+    for _, ob in enumerate(obs):
+        ind = coarse_inds[_]
+        pts =  to_compute[_][:,ind]
+        xap_Hs, xbp_Hs, xcp_Hs, xap_dHs, xbp_dHs, xcp_dHs = xps[_]
+        xap_H,  xbp_H,  xcp_H,  xap_dH,  xbp_dH,  xcp_dH  = xap_Hs[1:, ind], xbp_Hs[1:, ind], xcp_Hs[1:, ind], \
+                                                            xap_dHs[1:, ind], xbp_dHs[1:, ind], xcp_dHs[1:, ind]
+        J, dJ  = object_jac(xap_H,  xbp_H,  xcp_H,  xap_dH,  xbp_dH,  xcp_dH, ob.conv_toa, ob.cors_sur, band_weight)
+        J, dJ  = remap_J_dJ(J, dJ, pts, aero_res, aero_shape)
+           
+        Js  += J
+        dJs.append(dJ)
+    return Js, np.array(dJs)
+
+def fine_cost(xps, toas, fine_inds, to_compute, band_weight, bands, fine_xys, aero_shape):
+
+    all_surs, all_surs_dH, valid_masks = [], [], []
+
+    for _, toa in enumerate(toas):
+        fine_ind = fine_inds[_]
+        xap_Hs, xbp_Hs, xcp_Hs, xap_dHs, xbp_dHs, xcp_dHs = xps[_]
+        xap_H,  xbp_H,  xcp_H,  xap_dH,  xbp_dH,  xcp_dH  = xap_Hs[:, fine_ind], xbp_Hs[:, fine_ind], xcp_Hs[:, fine_ind], \
+                                                            xap_dHs[:, fine_ind], xbp_dHs[:, fine_ind], xcp_dHs[:, fine_ind]
+        pts = to_compute[_][:,fine_ind]
+        selx, sely = fine_xys[_]
         surs = 0       
         dHs  = 0               
+        band = bands[_]
         for i in range(4):
-            sur, dH = cal_sur(xap_Hs, xbp_Hs, xcp_Hs, xap_dHs, xbp_dHs, xcp_dHs, toa[bands][:, selx[i], sely[i]].data)
+            sur, dH = cal_sur(xap_H,  xbp_H,  xcp_H,  xap_dH,  xbp_dH,  xcp_dH, toa[band][:, selx[i], sely[i]].data)
             surs += sur
             dHs  += dH
         surs /= 4
         dHs  /= 4
+    
         temp = np.zeros((7,) + aero_shape + (1,))
         temp[:, pts[0], pts[1]] = surs
         all_surs.append(temp)   
@@ -1057,50 +1082,247 @@ def temp_cost(p, toas, emus, auxs, masks, pix_res, aero_res, bands, target_mask)
 
         valid_mask = np.zeros(aero_shape)
         valid_mask[pts[0], pts[1]] = 1
+        
+        valid_mask[0,  :] = 0
+        valid_mask[:,  0] = 0
+        valid_mask[-1, :] = 0
+        valid_mask[:, -1] = 0
+
         valid_masks.append(valid_mask)       
-    return all_surs, all_surs_dH, valid_masks
 
-
-def temporal_cost(p, s2_toas, s2_emus, s2_auxs, masks, l8_toas,l8_emus, l8_auxs, pix_res, aero_res, target_mask):
-    size = s2_auxs[0].sza.size 
-    
-    s2_rets = temp_cost(p[:2*len(s2_toas)*size], s2_toas,s2_emus, s2_auxs, masks[:len(s2_toas)], pix_res, aero_res, [0, 1, 2, 3, 8, 11, 12], ~target_mask)
-    l8_rets = temp_cost(p[2*len(s2_toas)*size:], l8_toas,l8_emus, l8_auxs, masks[len(s2_toas):], pix_res, aero_res, [0, 1, 2, 3, 4,  5,  6], ~target_mask)
-    
-    surs      = np.array(s2_rets[0] + l8_rets[0])#.sum(axis=0)
-    surs_dH   = np.array(s2_rets[1] + l8_rets[1])#.sum(axis=0)
-    counts    = np.array(s2_rets[2] + l8_rets[2])#.sum(axis=0)
-    count_sum = counts.sum(axis=0)[None, ..., None]
-    mean_surs = surs.sum(axis=0)    / count_sum
-    mean_dHs  = surs_dH.sum(axis=0) / count_sum
-
+    count_sum = np.sum(valid_masks, axis=0)[None, ..., None]
+    mean_surs = np.sum(all_surs,    axis=0) / count_sum
+    mean_dHs  = np.sum(all_surs_dH, axis=0) / count_sum
+        
     Js         = 0
-    dJs        = 0
-    for i in range(len(surs)):
-        diff = surs[i] - mean_surs
+    dJs        = []
+    for i in range(len(all_surs)):
+        diff = all_surs[i] - mean_surs
         J    = 0.5 * diff**2
-        dJ   = diff * (surs_dH[i] - mean_dHs)   
-        J [:, counts[i] == 0] = 0
-        dJ[:, counts[i] == 0] = 0
-        Js   += J
-        dJs  += dJ
+        dJ   = diff * (all_surs_dH[i] - mean_dHs)   
+        J [:, valid_masks[i] == 0] = 0
+        dJ[:, valid_masks[i] == 0] = 0
+        Js   += J * band_weight[...,None,None,None]
+        dJs.append(dJ * band_weight[...,None,None,None])
+        
+    return Js.sum(axis=(0,3)) /0.01**2 , np.array(dJs).sum(axis=1).transpose(0, 3, 1, 2) / 0.01**2
 
-    return Js.sum(axis=(0,3)), dJs.sum(axis=0).T
 
-def cost_cost(p, s2_toas, s2_emus, s2_auxs, masks, l8_toas,l8_emus, l8_auxs, pix_res, aero_res, target_mask):
+
+def get_starting_aots(obs, auxs, aero_res):
+    iso_tnn = Two_NN(tf_model_file='/home/ucfafyi/DATA/Prosail/Inverse_6S_AOT_iso.h5')
+    aots  = []
+    shape = auxs[0].priors[0].shape 
+    for i in range(len(obs)):
+        ob  = obs[i]
+        aux = auxs[i]
+        xx = np.vstack([ob.conv_toa[:2], ob.cors_sur[:2], np.ones_like(ob.cors_sur[:5]) * np.atleast_2d([aux.sza.mean(), aux.vza[0].mean(), aux.raa[0][0,0], aux.priors[2].mean(), aux.ele.mean()]).T]) 
+        aot   = iso_tnn.predict(xx.T)[0].ravel() 
+        aot_min, aot_max = np.nanpercentile(aot, [15, 85])
+        indx, indy = (ob.cors_pts * 500 / aero_res).astype(int)
+        myInterpolator = NearestNDInterpolator((indx, indy), aot) 
+        grid_x, grid_y = np.mgrid[0:shape[0]:1, 0:shape[1]:1,]
+        aot = myInterpolator(grid_x, grid_y)
+        aot = smoothn(aot, isrobust=True, TolZ=1e-6, W = 100*((aot >= aot_min) & (aot <=aot_max)), s=10, MaxIter=1000)[0]
+        aots.append(aot.astype(float))
+    return aots
+
+
+def get_starting_tcwvs(auxs, toas, aero_res, pix_res):
+    iso_tcwv = Two_NN(np_model_file = '/home/ucfafyi/DATA/BRDF_coupling/iso_tcwv_no_aot.npz')
+    tcwvs = []
+    area = np.ceil(aero_res / pix_res).astype(int)                                          
+    kern = np.ones((area, area)) / (area*area)                                              
+    shape = auxs[0].priors[0].shape                                                         
+    points = np.repeat(np.arange(shape[0]), shape[1]), np.tile(np.arange(shape[1]), shape[0])
+    points = (np.array(points) * aero_res / pix_res).astype(int).T 
+    for i in range(len(toas)):
+        toa = toas[i]
+        aux = auxs[i]
+        temp   = toa[9].copy()                                                                                                                                            
+        temp[toa[9].mask] = np.nan
+        b9   = points_convolve(temp, kern, points)
+                                 
+        temp   = toa[8].copy()   
+        temp[toa[8].mask] = np.nan 
+        b8   = points_convolve(temp, kern, points)
+                                 
+        xx = np.array([b9, b8, aux.sza.ravel(), aux.vza[4].ravel(), aux.raa[4].ravel(), aux.priors[-1].ravel(), aux.ele.ravel()])
+        #iX = np.vstack([np.array([b9, b8]).reshape(2,-1), cons.reshape(5, -1)])
+        tcwv = iso_tcwv.predict(xx.T)[0].ravel()
+        tcwvs.append(tcwv.reshape(shape).astype(float))
+        
+    return tcwvs
+
+
+def cost_cost(p, s2_obs, l8_obs, s2_toas, s2_emus, s2_auxs, masks, l8_toas,l8_emus, l8_auxs, pix_res, aero_res, target_mask, gamma1, gamma2, alpha):
     
-    gamma = 10
-    smooth_J, smooth_dJ = smooth_cost(p, s2_auxs + l8_auxs, gamma)
+    band_weight = np.array([0.442, 0.469, 0.555, 0.645, 0.859, 1.64 , 2.13 ])**alpha 
+    band_weight = band_weight
+    bands   = [[0, 1, 2, 3, 8, 11, 12]] * len(s2_toas) + [[0, 1, 2, 3, 4, 5, 6]] * len(l8_toas)
+
+    aero_shape = s2_auxs[0].sza.shape
+    toa_shape  = s2_toas[0][0].shape
+    to_compute, fine_inds, coarse_inds, fine_xys = get_targets(s2_obs + l8_obs, masks, pix_res, aero_res, target_mask, aero_shape, toa_shape)
+    xps = get_xps(p, s2_emus + l8_emus, s2_auxs + l8_auxs, to_compute)
+
+    smooth_J, smooth_dJ = smooth_cost(p, s2_auxs + l8_auxs, gamma1, gamma2)
     prior_J, prior_dJ   = prior_cost( p, s2_auxs + l8_auxs)
-    temp_J, temp_dJ     = temporal_cost(p, s2_toas, s2_emus, s2_auxs, masks, l8_toas,l8_emus, l8_auxs, pix_res, aero_res, target_mask)
-    obs_J,  obs_dJ      = obs_cost     (p, s2_obs + l8_obs, s2_emus + l8_emus, s2_auxs + l8_auxs, pix_res, aero_res)
-    J  = smooth_J + prior_J + temp_J + obs_J 
-    dJ = smooth_dJ + prior_dJ + temp_dJ + obs_dJ
-    return J, dJ
+    fine_J, fine_dJ     = fine_cost(  xps, s2_toas + l8_toas, fine_inds,   to_compute, band_weight, bands, fine_xys, aero_shape)
+    coarse_J, coarse_dJ = coarse_cost(xps, s2_obs  + l8_obs,  coarse_inds, to_compute, band_weight[1:], aero_shape, aero_res)
+    cost_mask = (fine_J==0) #& (coarse_J==0)
+    prior_J [     cost_mask] = 0
+    prior_dJ[:,:, cost_mask] = 0
 
-
-
-
-
-
+    J  = coarse_J  + fine_J + smooth_J   + prior_J
+    dJ = coarse_dJ + fine_dJ + smooth_dJ + prior_dJ
     
+    return J.sum(), dJ.reshape(dJ.shape[0]*dJ.shape[1],-1).reshape(-1) 
+
+
+
+def get_p0(s2_obs, l8_obs, s2_auxs, l8_auxs, s2_toas, aero_res, pix_res):
+    p0 = [] 
+    aots = get_starting_aots(s2_obs  + l8_obs, s2_auxs + l8_auxs, aero_res)
+    tcwvs = get_starting_tcwvs(s2_auxs, s2_toas, aero_res, pix_res)
+
+    for _, s2_aux in enumerate(s2_auxs): 
+
+        tcwv = tcwvs[_]
+        median = np.nanmedian(tcwv)
+        mask = (tcwv > 0) & (tcwv < 8)
+        tcwv[~mask] = median
+
+        priors    = s2_aux.priors
+        priors[1] = tcwv
+        s2_aux    = s2_aux._replace(priors = priors)
+        s2_auxs[_] = s2_aux
+
+        aot = aots[_]
+        mask = (aot > 0) & (aot < 2.5)
+        aot[~mask] = np.nan
+        median = np.nanmedian(aot)
+        aot[~mask] = median
+
+        p0.append(np.ones_like(aot) * median) 
+        p0.append(tcwv) 
+
+    for _, l8_aux in enumerate(l8_auxs): 
+
+        aot = aots[_ + len(s2_auxs)]
+        mask = (aot > 0) & (aot < 2.5)
+        aot[~mask] = np.nan
+        median = np.nanmedian(aot)
+        aot[~mask] = median 
+
+        
+        p0.append(np.ones_like(aot) * median) 
+        p0.append(l8_aux.priors[1]) 
+
+
+    p0 = np.array(p0).ravel() 
+    return p0
+
+def grid_conversion(array, new_shape):
+    #vmin, vmax = np.nanpercentile(array, (2.5, 97.5))
+    #array[~((array < vmax) & (array > vmin))] = np.nanmedian(array)
+    rs, cs = array.shape
+    x, y   = np.arange(rs), np.arange(cs)
+    kx = 3 if rs > 3 else 1                       
+    ky = 3 if cs > 3 else 1                       
+    f      = interpolate.RectBivariateSpline(x, y, array, kx=kx, ky=ky, s=0)
+    nx, ny = new_shape
+    nx, ny = 1. * np.arange(nx) / nx * rs, 1. * np.arange(ny) / ny * cs
+    znew   = f(nx, ny)
+    return znew
+
+def sample_atmos(p, shape, new_shape):
+    p_shape = p.shape
+    new_p = np.zeros(p_shape[:2] + new_shape)
+    for i in range(p_shape[0]):
+        for j in range(p_shape[1]):
+            new_p[i, j] = grid_conversion(p[i, j], new_shape)
+    return new_p
+        
+
+def get_ranges(p_shape):
+    vmin = np.zeros(p_shape)     
+    vmax = np.zeros(p_shape)     
+    aot_min_max  = [0.001, 2.5]
+    tcwv_min_max = [0.001, 8] 
+    for i in range(p_shape[0]):       
+        #for j in range(p_shape[1]):   
+        vmin[i, 0] = aot_min_max[0]
+        vmax[i, 0] = aot_min_max[1]
+
+        vmin[i, 1] = tcwv_min_max[0]
+        vmax[i, 1] = tcwv_min_max[1]
+
+    return np.array([vmin.ravel(), vmax.ravel()]).T
+
+
+def do_one_s2(fs):
+
+    logger = create_logger()
+    logger.propagate = False
+    aoi, s2_file, s2_fnames, l8_fnames = fs
+    s2_files, l8_files = pre_processing(s2_fnames, l8_fnames)
+    temporal_window = 1
+    pix_res = 30
+    dstSRS, outputBounds = get_bounds(aoi, s2_files[0][2][2], pix_res)
+
+    s2s, s2_times, l8s, l8_times = get_obs(s2_files, l8_files)
+    obs_times = np.unique(s2_times + l8_times).tolist()
+    vrt_dir = get_mcd43(aoi, obs_times, '/home/ucfafyi/hep/MCD43/', temporal_window = temporal_window , jasmin = True, vrt_dir='/home/ucfafyi/MCD43_VRT/')
+    logger.info('Reading TOAs.')
+    s2_toas, s2_surs, s2_uncs, s2_clds = read_s2(s2s, pix_res, dstSRS, outputBounds, vrt_dir, temporal_window = temporal_window )
+    l8_toas, l8_surs, l8_uncs, l8_clds = read_l8(l8s, pix_res, dstSRS, outputBounds, vrt_dir, temporal_window = temporal_window )
+    logger.info('Redo cloud mask.')
+    s2_clouds, s2_shadows,s2_changes, l8_clouds, l8_shadows, l8_changes = redo_cloud_shadow(s2_toas, l8_toas, s2_clds, l8_clds)
+
+    sur_x, sur_y = s2_surs[0][0].shape
+    logger.info('Getting optimal PSF parameters.')  
+    possible_x_y, struct, gaus, pointXs, pointYs = cal_psf_points(pix_res, sur_x, sur_y)
+    s2_obs = do_s2_psf(s2s, s2_toas, s2_clouds, s2_shadows, s2_surs, possible_x_y, struct, gaus, pointXs, pointYs) 
+    l8_obs = do_l8_pdf(l8s, l8_toas, l8_clouds, l8_shadows, l8_surs, possible_x_y, struct, gaus, pointXs, pointYs)
+
+    cams_dir  = '/vsicurl/http://www2.geog.ucl.ac.uk/~ucfafyi/cams/'
+    dem       = '/vsicurl/http://www2.geog.ucl.ac.uk/~ucfafyi/eles/global_dem.vrt'
+    s2_emus, l8_emus = load_emus(s2s, l8s)
+
+    ret = []
+    old_shape = None
+    logger.info('MultiGrid solver in process...')
+    for _, aero_res in enumerate([10000, 5000, 2500, 1000, 500, 240, 120]):
+        logger.info(bcolors.BLUE + '+++++++++++++++++++++++++++++++++++++++++++++++++'+bcolors.ENDC)
+        logger.info(bcolors.RED + 'Optimizing at resolution %d m' % (aero_res) + bcolors.ENDC)
+        #aero_res = 250
+        s2_auxs, l8_auxs = prepare_aux(s2s, l8s, aero_res, dstSRS, outputBounds, dem, cams_dir, s2_toas, pix_res)
+        total_obs        = len(s2s) + len(l8s)
+        obs_nums         = total_obs - np.array(s2_clouds + l8_clouds + s2_shadows + l8_shadows).astype(int).sum(axis=0)
+        stable_targets   = get_stable_targets(s2_changes + l8_changes, s2_clouds + l8_clouds, s2_shadows + l8_shadows, s2_toas + l8_toas)
+        target_mask      = (obs_nums >= 0.5*total_obs ) & (np.array(stable_targets).astype(int).sum(axis=0)>1)
+        masks = combine_mask(target_mask, stable_targets) 
+        new_shape = s2_auxs[0].ele.shape
+        if _ ==0:
+            p0 = get_p0(s2_obs, l8_obs, s2_auxs, l8_auxs, s2_toas, aero_res, pix_res)
+        else:
+            pp = ret[-1]
+            p0 = sample_atmos(pp, old_shape, new_shape)    
+            #p0[:len(s2_auxs),1] = np.array(tcwvs)
+
+        bounds = get_ranges((total_obs, 2) + new_shape)
+        psolve = optimize.minimize(cost_cost, p0.ravel(), jac=True, method='L-BFGS-B', bounds = bounds, 
+                                options={'disp': False, 'gtol': 1e-04, 'maxfun': 100, 'maxiter': 100, 'ftol': 1e-16}, 
+                                args =(s2_obs, l8_obs, s2_toas, s2_emus,s2_auxs, masks, l8_toas,l8_emus, l8_auxs, pix_res, aero_res, target_mask, 20, 10, -1.6))
+        ret.append(psolve.x.reshape((total_obs, 2) + new_shape))
+        old_shape = new_shape 
+        
+        logger.info(bcolors.GREEN + str(psolve['message'].decode()) + bcolors.ENDC)
+        logger.info(bcolors.GREEN + 'Iterations: %d'%int(psolve['nit']) + bcolors.ENDC)
+        logger.info(bcolors.GREEN + 'Function calls: %d'%int(psolve['nfev']) +bcolors.ENDC)  
+    
+    return ret
+ret = find_around_files(sites[1])
+fs = ret[0]
+ret = do_one_s2(fs)

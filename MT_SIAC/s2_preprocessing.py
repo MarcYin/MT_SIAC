@@ -51,6 +51,8 @@ def s2_pre_processing(s2_dir):
     s2_dir = os.path.abspath(s2_dir)
     scihub = []
     aws    = []
+    logger = create_logger()
+    logger.propagate = False
     for (dirpath, dirnames, filenames)  in os.walk(s2_dir):
         if len(filenames)>0:
             temp = [dirpath + '/' + i for i in filenames]
@@ -69,8 +71,6 @@ def s2_pre_processing(s2_dir):
         log_file = top_dir + '/SIAC_S2.log'
         if os.path.exists(log_file):
             os.remove(log_file)
-        logger = create_logger()
-        logger.propagate = False
         logger.info('Preprocessing for %s'%tile)
         logger.info('Doing per pixel angle resampling.')
         bands    = ['B01', 'B02', 'B03','B04','B05' ,'B06', 'B07', 'B08','B8A', 'B09', 'B10', 'B11', 'B12']
