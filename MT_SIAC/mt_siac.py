@@ -8,10 +8,12 @@ import psutil
 import requests
 import datetime
 import kernels
+from numba import jit
 from io import StringIO
 import pandas as pd
 import numpy as np
 from glob import glob
+import multiprocessing
 from Two_NN import Two_NN
 from smoothn import smoothn
 from functools import partial
@@ -27,7 +29,7 @@ from s2_preprocessing import s2_pre_processing
 from l8_preprocessing import l8_pre_processing
 from scipy.interpolate import NearestNDInterpolator
 from skimage.morphology import disk, binary_dilation, binary_closing, binary_opening
-procs =  psutil.cpu_count()
+procs =  multiprocessing.cpu_count()
 file_path = os.path.dirname(os.path.realpath(__file__))
 from create_logger import create_logger
 
@@ -330,8 +332,22 @@ def read_s2(s2s, pix_res, dstSRS, outputBounds, vrt_dir, temporal_window):
 
 
 def redo_cloud_shadow(s2_toas, l8_toas, s2_clds, l8_clds):
-    month_obs = np.ma.vstack([np.ma.array(s2_toas)[:,[1, 2, 3, 8, 11, 12]], np.ma.array(l8_toas)[:,[1, 2, 3, 4, 5, 6]]])
-    med_obs = np.ma.median(month_obs, axis = 0) 
+    if len(s2_toas + l8_toas) == 0:
+        raise IOError('At least one S2 or L8 image is needed.')
+    else:
+        shape = (s2_toas + l8_toas)[0][0].shape
+    if len(s2_toas)>0:
+        s2_temp = np.ma.array(s2_toas)[:,[1, 2, 3, 8, 11, 12]]
+    else:
+        s2_temp = np.zeros((0, 6) + shape)
+    if len(l8_toas)>0: 
+        l8_temp = np.ma.array(l8_toas)[:,[1, 2, 3, 4, 5, 6]]
+    else:
+        l8_temp = np.zeros((0, 6) + shape)
+
+    month_obs = np.ma.vstack([s2_temp, l8_temp])
+    med_obs = np.ma.median(month_obs, axis = 0)
+
     struct = disk(5)                            
     s2_shadows = []                             
     s2_clouds  = []                              
@@ -382,7 +398,6 @@ def gaussian(xstd, ystd, norm = True):
     else:
         return gaus 
 
-from numba import jit
 
 #@jit()
 def cost(p, toa, sur, pxs, pys, pcxs, pcys, gaus):
@@ -446,19 +461,26 @@ def do_s2_psf(s2s, s2_toas, s2_clouds, s2_shadows, s2_surs, possible_x_y, struct
         border     = np.ones_like(data).astype(bool)
         border[1:-1, 1:-1] = False       
         bad_pix    = s2_clouds[_] | s2_shadows[_] | border
-        bad_pix    = ndimage.binary_dilation(bad_pix, structure = struct, iterations=10)
+        bad_pix    = ndimage.binary_dilation(bad_pix, structure = struct, iterations=1)
         good_xy    = (~bad_pix)[pointXs, pointYs]
         p_xs, p_ys = pointXs[good_xy], pointYs[good_xy]
         p_corse_xs, p_corse_ys = np.repeat(range(c_x), c_y)[good_xy], np.tile(range(c_y), c_x)[good_xy]
-        par = partial(cost, toa = data, sur = s2_surs[_][-1], pxs = p_xs, pys = p_ys, pcxs = p_corse_xs, pcys = p_corse_ys, gaus = gaus)
-        p   = Pool()                     
-        ret = p.map(par, possible_x_y)        
-        p.close()                        
-        p.join()                         
-        mind = np.nanargmin(np.array(ret, dtype=np.object)[:,0])
-        shift_x, shift_y   = possible_x_y[mind]
-        un_r, points, mask = ret[mind]   
-        logger.info('X_shift: %d, Y_shift: %d, rValue: %.02f'%(shift_x, shift_y, 1-un_r))
+
+        if np.isnan(sur).sum() / sur.size > 0.95:
+            logger.info('More than 95% surface reflectance is invalid and psf optimisation is passed.')
+            points = np.array([p_xs, p_ys]).T
+            mask   = np.zeros_like(p_xs).astype(bool)
+        else:
+            par = partial(cost, toa = data, sur = s2_surs[_][-1], pxs = p_xs, pys = p_ys, pcxs = p_corse_xs, pcys = p_corse_ys, gaus = gaus)
+            p   = Pool()                     
+            ret = p.map(par, possible_x_y)        
+            p.close()                        
+            p.join()                         
+            mind = np.nanargmin(np.array(ret, dtype=np.object)[:,0])
+            shift_x, shift_y   = possible_x_y[mind]
+            un_r, points, mask = ret[mind]   
+            logger.info('X_shift: %d, Y_shift: %d, rValue: %.02f'%(shift_x, shift_y, 1-un_r))
+
         s2_conv_toa = []          
         s2_cors_sur = []       
         for band in [1, 2, 3, 8, 11, 12]:                                                                                                                                 
@@ -468,11 +490,12 @@ def do_s2_psf(s2s, s2_toas, s2_clouds, s2_shadows, s2_surs, possible_x_y, struct
             conv_toa = points_convolve(data, gaus, points)
             conv_toa[conv_toa<=0.001] = np.nan
             s2_conv_toa.append(conv_toa)      
-        s2_cors_sur = np.array(s2_surs[0])[:, p_corse_xs[mask], p_corse_ys[mask]]
+        s2_cors_sur = np.array(s2_surs[_])[:, p_corse_xs[mask], p_corse_ys[mask]]
         
         s2_conv_toas.append(s2_conv_toa) 
         s2_cors_surs.append(s2_cors_sur)
         s2_cors_pots.append(np.array([p_corse_xs[mask], p_corse_ys[mask]]))
+
     s2_obss = [] 
     for _, s2_toa in enumerate(s2s):
         s2_obs = namedtuple('s2_obs', 'cors_sur conv_toa cors_pts')
@@ -502,15 +525,22 @@ def do_l8_pdf(l8s, l8_toas, l8_clouds, l8_shadows, l8_surs, possible_x_y, struct
         good_xy    = (~bad_pix)[pointXs, pointYs]
         p_xs, p_ys = pointXs[good_xy], pointYs[good_xy]
         p_corse_xs, p_corse_ys = np.repeat(range(c_x), c_y)[good_xy], np.tile(range(c_y), c_x)[good_xy]
-        par = partial(cost, toa = data, sur = l8_surs[_][-1], pxs = p_xs, pys = p_ys, pcxs = p_corse_xs, pcys = p_corse_ys, gaus = gaus)
-        p   = Pool()                     
-        ret = p.map(par, possible_x_y)        
-        p.close()                        
-        p.join()                         
-        mind = np.nanargmin(np.array(ret, dtype=np.object)[:,0])
-        shift_x, shift_y   = possible_x_y[mind]
-        un_r, points, mask = ret[mind]   
-        logger.info('X_shift: %d, Y_shift: %d, rValue: %.02f'%(shift_x, shift_y, 1-un_r))
+
+        if np.isnan(sur).sum() / sur.size > 0.95:
+            logger.info('More than 95% surface reflectance is invalid and psf optimisation is passed.')
+            points = np.array([p_xs, p_ys]).T
+            mask   = np.zeros_like(p_xs).astype(bool)
+        else:
+            par = partial(cost, toa = data, sur = l8_surs[_][-1], pxs = p_xs, pys = p_ys, pcxs = p_corse_xs, pcys = p_corse_ys, gaus = gaus)
+            p   = Pool()                     
+            ret = p.map(par, possible_x_y)        
+            p.close()                        
+            p.join()                         
+            mind = np.nanargmin(np.array(ret, dtype=np.object)[:,0])
+            shift_x, shift_y   = possible_x_y[mind]
+            un_r, points, mask = ret[mind]   
+            logger.info('X_shift: %d, Y_shift: %d, rValue: %.02f'%(shift_x, shift_y, 1-un_r))
+
         l8_conv_toa = []          
         for band in [1, 2, 3, 4, 5, 6]:                                                                                                                                 
             data = l8_toa[band].data.copy()   
@@ -519,7 +549,7 @@ def do_l8_pdf(l8s, l8_toas, l8_clouds, l8_shadows, l8_surs, possible_x_y, struct
             conv_toa = points_convolve(data, gaus, points)
             conv_toa[conv_toa<=0.001] = np.nan
             l8_conv_toa.append(conv_toa)      
-        l8_cors_sur = np.array(l8_surs[0])[:, p_corse_xs[mask], p_corse_ys[mask]]
+        l8_cors_sur = np.array(l8_surs[_])[:, p_corse_xs[mask], p_corse_ys[mask]]
     
         l8_conv_toas.append(l8_conv_toa) 
         l8_cors_surs.append(l8_cors_sur)
@@ -1007,12 +1037,19 @@ def get_targets(obs, masks, pix_res, aero_res, target_mask, aero_shape, toa_shap
         pts1 = (selx[0] * pix_res / aero_res).astype(int), (sely[0] * pix_res / aero_res).astype(int)
         pts2 = (ob.cors_pts * 500 / aero_res).astype(int)                          
         ppts = np.hstack([pts1, pts2])
-        inds, inv = np.unique(ppts, axis=1, return_inverse=True)
-
-        to_compute.append(inds)
-        fine_inds.append(  inv[:len(pts1[0])])
-        coarse_inds.append(inv[len(pts1[0]):])
-        fine_xys.append(np.array([selx, sely]))
+        if ppts.shape[1]>0:
+            inds, inv = np.unique(ppts, axis=1, return_inverse=True)
+        
+            to_compute.append(inds)
+            fine_inds.append(  inv[:len(pts1[0])])
+            coarse_inds.append(inv[len(pts1[0]):])
+            fine_xys.append(np.array([selx, sely]))
+        else:
+            inds, inv = np.zeros((2,0)), np.zeros((0,))
+            to_compute.append(inds)                
+            fine_inds.append(  inv[:len(pts1[0])]) 
+            coarse_inds.append(inv[len(pts1[0]):]) 
+            fine_xys.append(np.array([selx, sely]))
     return to_compute, fine_inds, coarse_inds, fine_xys
      
 
@@ -1024,16 +1061,20 @@ def get_xps(p, emus, auxs, to_compute):
         shape  = aux.sza.shape                   
         pp     = p[_ * size * 2 : (_+1) * size * 2].reshape(2, shape[0], shape[1])
         pts    = to_compute[_]                                                 
-
-        aot    = pp[0]               [   pts[0], pts[1]] 
-        tcwv   = pp[1]               [   pts[0], pts[1]]
-        sza    = np.array(aux.sza)   [   pts[0], pts[1]] 
-        vza    = np.array(aux.vza)   [:, pts[0], pts[1]] 
-        raa    = np.array(aux.raa)   [:, pts[0], pts[1]] 
-        ele    = np.array(aux.ele)   [   pts[0], pts[1]]
-        tco3   = np.array(aux.priors)[2, pts[0], pts[1]]
-        X      = [sza, vza, raa, aot, tcwv, tco3, ele]
-        xps.append(predic_xps_all(X, emu))
+        if pts.shape[1] > 0:
+            aot    = pp[0]               [   pts[0], pts[1]] 
+            tcwv   = pp[1]               [   pts[0], pts[1]]
+            sza    = np.array(aux.sza)   [   pts[0], pts[1]] 
+            vza    = np.array(aux.vza)   [:, pts[0], pts[1]] 
+            raa    = np.array(aux.raa)   [:, pts[0], pts[1]] 
+            ele    = np.array(aux.ele)   [   pts[0], pts[1]]
+            tco3   = np.array(aux.priors)[2, pts[0], pts[1]]
+            X      = [sza, vza, raa, aot, tcwv, tco3, ele]
+            xps.append(predic_xps_all(X, emu))
+        else:
+            xps.append([np.zeros((7, 0, 1)), np.zeros((7, 0, 1)), np.zeros((7, 0, 1)), 
+                        np.zeros((7, 0, 2)), np.zeros((7, 0, 2)), np.zeros((7, 0, 2)),])
+        
     return xps
 
 def coarse_cost(xps, obs, coarse_inds, to_compute, band_weight, aero_shape, aero_res):
@@ -1041,15 +1082,19 @@ def coarse_cost(xps, obs, coarse_inds, to_compute, band_weight, aero_shape, aero
     dJs = []
     for _, ob in enumerate(obs):
         ind = coarse_inds[_]
-        pts =  to_compute[_][:,ind]
-        xap_Hs, xbp_Hs, xcp_Hs, xap_dHs, xbp_dHs, xcp_dHs = xps[_]
-        xap_H,  xbp_H,  xcp_H,  xap_dH,  xbp_dH,  xcp_dH  = xap_Hs[1:, ind], xbp_Hs[1:, ind], xcp_Hs[1:, ind], \
-                                                            xap_dHs[1:, ind], xbp_dHs[1:, ind], xcp_dHs[1:, ind]
-        J, dJ  = object_jac(xap_H,  xbp_H,  xcp_H,  xap_dH,  xbp_dH,  xcp_dH, ob.conv_toa, ob.cors_sur, band_weight)
-        J, dJ  = remap_J_dJ(J, dJ, pts, aero_res, aero_shape)
-           
-        Js  += J
-        dJs.append(dJ)
+        if ind.shape[0] > 0:
+            pts =  to_compute[_][:,ind]
+            xap_Hs, xbp_Hs, xcp_Hs, xap_dHs, xbp_dHs, xcp_dHs = xps[_]
+            xap_H,  xbp_H,  xcp_H,  xap_dH,  xbp_dH,  xcp_dH  = xap_Hs[1:, ind], xbp_Hs[1:, ind], xcp_Hs[1:, ind], \
+                                                                xap_dHs[1:, ind], xbp_dHs[1:, ind], xcp_dHs[1:, ind]
+            J, dJ  = object_jac(xap_H,  xbp_H,  xcp_H,  xap_dH,  xbp_dH,  xcp_dH, ob.conv_toa, ob.cors_sur, band_weight)
+            J, dJ  = remap_J_dJ(J, dJ, pts, aero_res, aero_shape)
+               
+            Js  += J
+            dJs.append(dJ)
+        else:
+            Js += np.zeros(aero_shape)
+            dJs.append(np.zeros((2,) + aero_shape))
     return Js, np.array(dJs)
 
 def fine_cost(xps, toas, fine_inds, to_compute, band_weight, bands, fine_xys, aero_shape):
@@ -1058,37 +1103,55 @@ def fine_cost(xps, toas, fine_inds, to_compute, band_weight, bands, fine_xys, ae
 
     for _, toa in enumerate(toas):
         fine_ind = fine_inds[_]
-        xap_Hs, xbp_Hs, xcp_Hs, xap_dHs, xbp_dHs, xcp_dHs = xps[_]
-        xap_H,  xbp_H,  xcp_H,  xap_dH,  xbp_dH,  xcp_dH  = xap_Hs[:, fine_ind], xbp_Hs[:, fine_ind], xcp_Hs[:, fine_ind], \
-                                                            xap_dHs[:, fine_ind], xbp_dHs[:, fine_ind], xcp_dHs[:, fine_ind]
-        pts = to_compute[_][:,fine_ind]
-        selx, sely = fine_xys[_]
-        surs = 0       
-        dHs  = 0               
-        band = bands[_]
-        for i in range(4):
-            sur, dH = cal_sur(xap_H,  xbp_H,  xcp_H,  xap_dH,  xbp_dH,  xcp_dH, toa[band][:, selx[i], sely[i]].data)
-            surs += sur
-            dHs  += dH
-        surs /= 4
-        dHs  /= 4
-    
-        temp = np.zeros((7,) + aero_shape + (1,))
-        temp[:, pts[0], pts[1]] = surs
-        all_surs.append(temp)   
-        temp = np.zeros((7,) + aero_shape + (2,))
-        temp[:, pts[0], pts[1]] = dH
-        all_surs_dH.append(temp)
 
-        valid_mask = np.zeros(aero_shape)
-        valid_mask[pts[0], pts[1]] = 1
+        if fine_ind.shape[0]>0:
+            xap_Hs, xbp_Hs, xcp_Hs, xap_dHs, xbp_dHs, xcp_dHs = xps[_]
+            xap_H,  xbp_H,  xcp_H,  xap_dH,  xbp_dH,  xcp_dH  = xap_Hs[:, fine_ind], xbp_Hs[:, fine_ind], xcp_Hs[:, fine_ind], \
+                                                                xap_dHs[:, fine_ind], xbp_dHs[:, fine_ind], xcp_dHs[:, fine_ind]
+            pts = to_compute[_][:,fine_ind]
+            selx, sely = fine_xys[_]
+            surs = 0       
+            dHs  = 0               
+            band = bands[_]
+            for i in range(4):
+                sur, dH = cal_sur(xap_H,  xbp_H,  xcp_H,  xap_dH,  xbp_dH,  xcp_dH, toa[band][:, selx[i], sely[i]].data)
+                surs += sur
+                dHs  += dH
+            surs /= 4
+            dHs  /= 4
         
-        valid_mask[0,  :] = 0
-        valid_mask[:,  0] = 0
-        valid_mask[-1, :] = 0
-        valid_mask[:, -1] = 0
+            temp = np.zeros((7,) + aero_shape + (1,))
+            temp[:, pts[0], pts[1]] = surs
+            all_surs.append(temp)   
+            temp = np.zeros((7,) + aero_shape + (2,))
+            temp[:, pts[0], pts[1]] = dH
+            all_surs_dH.append(temp)
 
-        valid_masks.append(valid_mask)       
+            valid_mask = np.zeros(aero_shape)
+            valid_mask[pts[0], pts[1]] = 1
+            
+            valid_mask[0,  :] = 0
+            valid_mask[:,  0] = 0
+            valid_mask[-1, :] = 0
+            valid_mask[:, -1] = 0
+
+            valid_masks.append(valid_mask)       
+        else:
+            surs = np.zeros((7, 0, 1))
+            dHs  = np.zeros((7, 0, 2))
+
+            temp = np.zeros((7,) + aero_shape + (1,))
+            all_surs.append(temp)    
+            temp = np.zeros((7,) + aero_shape + (2,))
+            all_surs_dH.append(temp) 
+            valid_mask = np.zeros(aero_shape)
+            valid_mask[0,  :] = 0    
+            valid_mask[:,  0] = 0    
+            valid_mask[-1, :] = 0    
+            valid_mask[:, -1] = 0    
+                                     
+            valid_masks.append(valid_mask)       
+
 
     count_sum = np.sum(valid_masks, axis=0)[None, ..., None]
     mean_surs = np.sum(all_surs,    axis=0) / count_sum
@@ -1116,14 +1179,17 @@ def get_starting_aots(obs, auxs, aero_res):
     for i in range(len(obs)):
         ob  = obs[i]
         aux = auxs[i]
-        xx = np.vstack([ob.conv_toa[:2], ob.cors_sur[:2], np.ones_like(ob.cors_sur[:5]) * np.atleast_2d([aux.sza.mean(), aux.vza[0].mean(), aux.raa[0][0,0], aux.priors[2].mean(), aux.ele.mean()]).T]) 
-        aot   = iso_tnn.predict(xx.T)[0].ravel() 
-        aot_min, aot_max = np.nanpercentile(aot, [15, 85])
-        indx, indy = (ob.cors_pts * 500 / aero_res).astype(int)
-        myInterpolator = NearestNDInterpolator((indx, indy), aot) 
-        grid_x, grid_y = np.mgrid[0:shape[0]:1, 0:shape[1]:1,]
-        aot = myInterpolator(grid_x, grid_y)
-        aot = smoothn(aot, isrobust=True, TolZ=1e-6, W = 100*((aot >= aot_min) & (aot <=aot_max)), s=10, MaxIter=1000)[0]
+        if ob.cors_sur.shape[1] < 10:
+            aot = aux.priors[0]
+        else:
+            xx = np.vstack([ob.conv_toa[:2], ob.cors_sur[:2], np.ones_like(ob.cors_sur[:5]) * np.atleast_2d([aux.sza.mean(), aux.vza[0].mean(), aux.raa[0][0,0], aux.priors[2].mean(), aux.ele.mean()]).T]) 
+            aot   = iso_tnn.predict(xx.T)[0].ravel() 
+            aot_min, aot_max = np.nanpercentile(aot, [15, 85])
+            indx, indy = (ob.cors_pts * 500 / aero_res).astype(int)
+            myInterpolator = NearestNDInterpolator((indx, indy), aot) 
+            grid_x, grid_y = np.mgrid[0:shape[0]:1, 0:shape[1]:1,]
+            aot = myInterpolator(grid_x, grid_y)
+            aot = smoothn(aot, isrobust=True, TolZ=1e-6, W = 100*((aot >= aot_min) & (aot <=aot_max)), s=10, MaxIter=1000)[0]
         aots.append(aot.astype(float))
     return aots
 
@@ -1314,7 +1380,7 @@ def do_one_s2(fs):
         bounds = get_ranges((total_obs, 2) + new_shape)
         psolve = optimize.minimize(cost_cost, p0.ravel(), jac=True, method='L-BFGS-B', bounds = bounds, 
                                 options={'disp': False, 'gtol': 1e-04, 'maxfun': 100, 'maxiter': 100, 'ftol': 1e-16}, 
-                                args =(s2_obs, l8_obs, s2_toas, s2_emus,s2_auxs, masks, l8_toas,l8_emus, l8_auxs, pix_res, aero_res, target_mask, 20, 10, -1.6))
+                                args =(s2_obs, l8_obs, s2_toas, s2_emus,s2_auxs, masks, l8_toas,l8_emus, l8_auxs, pix_res, aero_res, target_mask, 30, 5, -1.6))
         ret.append(psolve.x.reshape((total_obs, 2) + new_shape))
         old_shape = new_shape 
         
@@ -1324,5 +1390,5 @@ def do_one_s2(fs):
     
     return ret
 ret = find_around_files(sites[1])
-fs = ret[0]
+fs = ret[3]
 ret = do_one_s2(fs)

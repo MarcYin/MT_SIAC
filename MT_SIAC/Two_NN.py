@@ -140,25 +140,27 @@ def parallel_predict(x, Hidden_Layers, Output_Layers, cal_jac=False):
     return outs
 '''     
 
-def training(X, targs, nodes = 64, epochs = 2000, batch_size=60):
+def training(X, targs, nodes = 64, epochs = 2000, batch_size=60, device = '/cpu:0'):
     try:
         import tensorflow as tf              
         from tensorflow import keras         
         from tensorflow.keras import layers 
     except ImportError:
         raise ImportError('To train a nueral network, you need to install tensorflow and keras.')
-    inputs = layers.Input(shape=(X.shape[1],))    
-    x = layers.Dense(nodes, activation='relu')(inputs)
-    x = layers.Dense(nodes, activation='relu')(x)
-    outputs = []
-    for i in range(targs.shape[1]):
-        outputs.append(layers.Dense(1)(x))
-    model = tf.keras.Model(inputs=inputs, outputs=outputs)
-    optimizer = tf.keras.optimizers.Adam(lr=0.001, beta_1=0.9, beta_2=0.999, epsilon=None, decay=0.0, amsgrad=False)
-    model.compile(optimizer=optimizer,   
-                  loss='mean_squared_error',
-                  metrics=['mean_absolute_error'])
-    history = model.fit(X, [targs[:,i] for i in range(targs.shape[1])], epochs=epochs, batch_size=batch_size)
+
+    with tf.device(device):
+        inputs = layers.Input(shape=(X.shape[1],))    
+        x = layers.Dense(nodes, activation='relu')(inputs)
+        x = layers.Dense(nodes, activation='relu')(x)
+        outputs = []
+        for i in range(targs.shape[1]):
+            outputs.append(layers.Dense(1)(x))
+        model = tf.keras.Model(inputs=inputs, outputs=outputs)
+        optimizer = tf.keras.optimizers.Adam(lr=0.001, beta_1=0.9, beta_2=0.999, epsilon=None, decay=0.0, amsgrad=False)
+        model.compile(optimizer=optimizer,   
+                      loss='mean_squared_error',
+                      metrics=['mean_absolute_error'])
+        history = model.fit(X, [targs[:,i] for i in range(targs.shape[1])], epochs=epochs, batch_size=batch_size)
     return model, history
 
 def relearn(X, targs, model, epochs = 2000, batch_size=60):
@@ -190,14 +192,15 @@ def save_tf_model(model, fname):
         raise ImportError('To use a tensorflow model, you need to install tensorflow and keras.')
     model.save(fname)
 
-def load_tf_Model(fname):
+def load_tf_Model(fname, device = '/cpu:0'):
     try:
         import tensorflow as tf              
         from tensorflow import keras         
         from tensorflow.keras import layers 
     except ImportError:
         raise ImportError('To use a tensorflow model, you need to install tensorflow and keras.')
-    model  = tf.keras.models.load_model(fname)
+    with tf.device(device):
+        model  = tf.keras.models.load_model(fname)
     return model
 
 def save_np_model(fname, Hidden_Layers, Output_Layers):
@@ -242,9 +245,9 @@ class Two_NN(object):
             self.Hidden_Layers = Hidden_Layers 
             self.Output_Layers = Output_Layers 
     
-    def train(self, X, targs, nodes = 64, iterations = 2000, batch_size=60, tf_fname = "model.h5", save_tf_model = False):
+    def train(self, X, targs, nodes = 64, iterations = 2000, batch_size=60, tf_fname = "model.h5", save_tf_model = False, device = '/cpu:0'):
         if (X is not None) & (targs is not None):
-            self.tf_model, self.history = training(X, targs, nodes = nodes, epochs = iterations, batch_size=batch_size)
+            self.tf_model, self.history = training(X, targs, nodes = nodes, epochs = iterations, batch_size=batch_size, device = device)
             self.Hidden_Layers, self.Output_Layers = get_layers(self.tf_model)
             if save_tf_model:
                 save_tf_model(model, tf_fname)
