@@ -28,8 +28,9 @@ def post_view_angle(view_angle, out_name, delete_origin = False):
     hist, bin_edges = np.histogram(vaa[vaa>0], bins=1000)
     lvaa = bin_edges[np.argmax(hist)]
     mvaa = np.mean([rvaa, lvaa])
-    vaa[vaa<0] = np.nanmean(vaa[vaa<0])
-    vaa[vaa>0] = np.nanmean(vaa[vaa>0])
+    # vaa[vaa<0] = np.nanmean(vaa[vaa<0])
+    # vaa[vaa>0] = np.nanmean(vaa[vaa>0])
+    #vaa        = np.ones_like(vaa) * mvaa
     vaa[np.isnan(vaa)] = -327.67
     vza[np.isnan(vza)] = -327.67
     if os.path.exists(out_name):                   

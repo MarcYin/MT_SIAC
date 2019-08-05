@@ -32,7 +32,7 @@ from l8_preprocessing import l8_pre_processing
 from scipy.interpolate import NearestNDInterpolator
 from skimage.morphology import disk, binary_dilation, binary_closing, binary_opening
 procs =  multiprocessing.cpu_count()
-file_path = os.path.dirname(os.path.realpath(__file__))
+file_path = './' #os.path.dirname(os.path.realpath(__file__))
 from create_logger import create_logger
 
 class bcolors:
@@ -46,11 +46,24 @@ class bcolors:
     UNDERLINE = '\033[4m'
 
 
-sites = [i.split('/')[-2] for i in glob('/data/nemesis/acix_2/S2s_30/*/')] 
+sites = [i.split('/')[-2] for i in glob('/data/nemesis/acix_2/S2s_ground_30/*/')] 
 
 def do_one_site(site):
     s2_fnames = glob('/data/nemesis/acix_2/S2s_30/%s/*'%site)
     l8_fnames = glob('/data/nemesis/acix_2/L8s_30_LZW/%s/*'%site)
+    #aoi = glob('/data/nemesis/acix_2/%s_location.json'%site)[0]
+    s2_times = [datetime.datetime.strptime(i.split('_MSIL1C_')[1][:8], '%Y%m%d') for i in s2_fnames]
+    l8_times = [datetime.datetime.strptime(i.split('LC08_')[1][12:20], '%Y%m%d') for i in l8_fnames]
+    s2_files = sorted(s2_fnames, key = lambda s2_fname: s2_times[s2_fnames.index(s2_fname)])
+    l8_files = sorted(l8_fnames, key = lambda l8_fname: l8_times[l8_fnames.index(l8_fname)])
+    s2_times = sorted(s2_times)
+    l8_times = sorted(l8_times)
+    
+    return s2_files, l8_files, s2_times, l8_times
+
+def do_one_ground_site(site):
+    s2_fnames = glob('/data/nemesis/acix_2/S2s_ground_30/%s/*'%site)
+    l8_fnames = glob('/data/nemesis/acix_2/L8s_30_LZW_ground/%s/*'%site)
     #aoi = glob('/data/nemesis/acix_2/%s_location.json'%site)[0]
     s2_times = [datetime.datetime.strptime(i.split('_MSIL1C_')[1][:8], '%Y%m%d') for i in s2_fnames]
     l8_times = [datetime.datetime.strptime(i.split('LC08_')[1][12:20], '%Y%m%d') for i in l8_fnames]
@@ -136,6 +149,34 @@ def find_around_files(site):
             if abs((k - i).days)<15: 
                 l8_fnames.append(l8_files[l8_times.index(k)]) 
         res.append([aoi, s2_files[s2_times.index(i)], s2_fnames, l8_fnames])
+    return res
+
+def find_ground_files(site):
+    s2_files, l8_files, s2_times, l8_times = do_one_ground_site(site)
+    aoi = glob('/data/nemesis/acix_2/%s_location.json'%site)[0] 
+    res = [] 
+    for i in s2_times: 
+        s2_fnames = [] 
+        l8_fnames = []
+        for j in s2_times: 
+            if abs((j - i).days)<15: 
+                s2_fnames.append(s2_files[s2_times.index(j)]) 
+        for k in l8_times: 
+            if abs((k - i).days)<15: 
+                l8_fnames.append(l8_files[l8_times.index(k)]) 
+        middle_file = s2_files[s2_times.index(i)]
+        res.append([aoi, middle_file, s2_fnames.index(middle_file),s2_fnames, l8_fnames])
+    for i in l8_times: 
+        s2_fnames = [] 
+        l8_fnames = []
+        for j in s2_times: 
+            if abs((j - i).days)<15: 
+                s2_fnames.append(s2_files[s2_times.index(j)]) 
+        for k in l8_times: 
+            if abs((k - i).days)<15: 
+                l8_fnames.append(l8_files[l8_times.index(k)]) 
+        middle_file = l8_files[l8_times.index(i)]
+        res.append([aoi, middle_file, l8_fnames.index(middle_file),s2_fnames, l8_fnames])
     return res
 
 def get_kk(angles):                                                                                                                                                                            
@@ -510,7 +551,7 @@ def do_s2_psf(s2s, s2_toas, s2_clouds, s2_shadows, s2_surs, possible_x_y, struct
         s2_obss.append(ret)
     return s2_obss
 
-def do_l8_pdf(l8s, l8_toas, l8_clouds, l8_shadows, l8_surs, possible_x_y, struct, gaus, pointXs, pointYs):    
+def do_l8_psf(l8s, l8_toas, l8_clouds, l8_shadows, l8_surs, possible_x_y, struct, gaus, pointXs, pointYs):    
     l8_conv_toas = []                    
     l8_cors_surs = []
     l8_cors_pots = []
@@ -523,7 +564,7 @@ def do_l8_pdf(l8s, l8_toas, l8_clouds, l8_shadows, l8_surs, possible_x_y, struct
         border     = np.ones_like(data).astype(bool)
         border[1:-1, 1:-1] = False       
         bad_pix    = l8_clouds[_] | l8_shadows[_] | border
-        bad_pix    = ndimage.binary_dilation(bad_pix, structure = struct, iterations=10)
+        bad_pix    = ndimage.binary_dilation(bad_pix, structure = struct, iterations=1)
         good_xy    = (~bad_pix)[pointXs, pointYs]
         p_xs, p_ys = pointXs[good_xy], pointYs[good_xy]
         p_corse_xs, p_corse_ys = np.repeat(range(c_x), c_y)[good_xy], np.tile(range(c_y), c_x)[good_xy]
@@ -550,7 +591,7 @@ def do_l8_pdf(l8s, l8_toas, l8_clouds, l8_shadows, l8_surs, possible_x_y, struct
             data[l8_shadows[_]] = np.nan      
             conv_toa = points_convolve(data, gaus, points)
             conv_toa[conv_toa<=0.001] = np.nan
-            l8_conv_toa.append(conv_toa)      
+            l8_conv_toa.append(conv_toa[mask])      
         l8_cors_sur = np.array(l8_surs[_])[:, p_corse_xs[mask], p_corse_ys[mask]]
     
         l8_conv_toas.append(l8_conv_toa) 
@@ -602,8 +643,9 @@ def spectral_mapping(sur, toa, sensor):
             pmax = np.poly1d(pmaxs[i])
             diff = toa[i] - sur[i]
             mas  = (diff >= pmin(sur[i])) & (diff <= pmax(sur[i]))
-            mmin, mmax = np.percentile(toa[i][mas] - sur[i][mas], [5, 95])
-            mas  = mas & (diff >= mmin) & (diff <= mmax)
+            if mas.sum() > 0:
+                mmin, mmax = np.percentile(toa[i][mas] - sur[i][mas], [5, 95])
+                mas  = mas & (diff >= mmin) & (diff <= mmax)
             mask = mask & mas
     else:        
         mask = np.zeros(sur.shape[1]).astype(bool)
@@ -688,11 +730,11 @@ def prepare_aux(s2s, l8s, aero_res, dstSRS, outputBounds, dem, cams_dir, s2_toas
         tcwv[~mask] = median
                             
         priors        = s2_aux.priors
-        priors[0]     = aot
+        priors[0]     = np.ones_like(tcwv)*np.nanmedian(aot)
         priors[1]     = tcwv    
         prior_uncs    = s2_aux.prior_uncs
         prior_uncs[0] = 0.05
-        prior_uncs[1] = 0.05
+        prior_uncs[1] = 0.1
         s2_aux        = s2_aux._replace(priors = priors, prior_uncs = prior_uncs )
         s2_auxs[_]    = s2_aux 
         
@@ -966,24 +1008,7 @@ def cal_sur(xap_H, xbp_H, xcp_H, xap_dH, xbp_dH, xcp_dH, toa):
 
     return sur_ref, dH
 
-@jit(nopython=True)
-def choose_random_pixs(mask, pts, aero_res, pix_res, pix_area):
-       
-    sels = np.zeros((2, 4, pts[0].shape[0]))
-    #selys = np.zeros((4, pts[0].shape[0]))
 
-    for i in range(len(pts[0])):
-        pt         = pts[:,i]
-        x_start    = pt[0] * pix_area
-        y_start    = pt[1] * pix_area
-        sub        = mask [x_start : x_start + pix_area,  y_start : y_start + pix_area]
-        indx, indy = np.where(sub)
-        ind        = np.arange(len(indx))
-        np.random.shuffle(ind)
-        sels[0, :, i] = int(pt[0] * pix_area) + indx[ind[:4]]
-        sels[1, :, i] = int(pt[1] * pix_area) + indy[ind[:4]]
-     
-    return sels
 
 # def obs_cost(p, obs, emus, auxs, pix_res, aero_res):
 #     alpha = -1.6
@@ -1015,6 +1040,24 @@ def choose_random_pixs(mask, pts, aero_res, pix_res, pix_area):
 #         dJs += dJ                                                                                                                                                         
 #     return Js, dJs
 
+@jit(nopython=True)
+def choose_random_pixs(mask, pts, aero_res, pix_res, pix_area, choosen):
+
+    # choosen = min(int(0.5 * (aero_res // pix_res)**2), 100)   
+    sels = np.zeros((2, choosen, pts[0].shape[0]))
+    #selys = np.zeros((4, pts[0].shape[0]))
+    for i in range(len(pts[0])):
+        pt         = pts[:,i]
+        x_start    = pt[0] * pix_area
+        y_start    = pt[1] * pix_area
+        sub        = mask [x_start : x_start + pix_area,  y_start : y_start + pix_area]
+        indx, indy = np.where(sub)
+        ind        = np.arange(len(indx))
+        np.random.shuffle(ind)
+        sels[0, :, i] = int(pt[0] * pix_area) + indx[ind[:choosen]]
+        sels[1, :, i] = int(pt[1] * pix_area) + indy[ind[:choosen]]
+     
+    return sels
 
 def get_targets(obs, masks, pix_res, aero_res, target_mask, aero_shape, toa_shape):
 
@@ -1025,27 +1068,38 @@ def get_targets(obs, masks, pix_res, aero_res, target_mask, aero_shape, toa_shap
     #aero_shape = auxs[0].sza.shape                                           
     #toa_shape  = toas[0][0].shape
     pix_area   = int(np.ceil(aero_res / pix_res))                            
-    ratx, raty = int(aero_shape[0] * pix_area), int(aero_shape[1] * pix_area)
-                    
-    temp = np.zeros((ratx, raty)).astype(bool)                               
-    temp[:toa_shape[0], :toa_shape[1]] = target_mask                         
-                                                                             
-    temp = temp.reshape(aero_shape[0], pix_area, aero_shape[1], pix_area).sum(axis = (1,3))
-    pts  = np.array(np.where(temp>=4))                                       
-                    
-    selxs , selys = choose_random_pixs(target_mask, pts, aero_res, pix_res, pix_area).astype(int)
+    # ratx, raty = int(aero_shape[0] * pix_area), int(aero_shape[1] * pix_area)
+
+    valid_num      = np.array(masks).sum(axis=0)
+    compute_mask   = valid_num>=2
+    selxs , selys  = np.where(compute_mask)
+    # ratio          = aero_res // pix_res
+    proportion     = 0.75#(pix_area**2 - 32) / pix_area**2
+    discard        = np.random.choice(len(selxs), int(proportion * len(selxs)), replace=False)
+    compute_mask[selxs[discard], selys[discard]] = False
+    # temp = np.zeros((ratx, raty)).astype(bool)                           
+    # # to guarentee  consistent shape   
+    # temp[:min(ratx, toa_shape[0]), :min(raty,toa_shape[1])] = compute_mask[:min(ratx, toa_shape[0]), :min(raty,toa_shape[1])]                                                                           
+    # temp  = temp.reshape(aero_shape[0], pix_area, aero_shape[1], pix_area).sum(axis = (1,3))
+    #ratio = aero_res // pix_res
+    #pts   = np.array(np.where(temp>0))                                                  
+    
+    #selxs , selys = pts#choose_random_pixs(target_mask, pts, aero_res, pix_res, pix_area).astype(int)
+    
     for _, ob in enumerate(obs):                                                     
-        mask = masks[_]                                                                
-        mm   = mask[selxs[0],  selys[0]] & mask[selxs[1],  selys[1]] & mask[selxs[2],  selys[2]] & mask[selxs[3],  selys[3]]
-        selx = selxs[:,mm]                                                             
-        sely = selys[:,mm]                                                             
-      
-        pts1 = (selx[0] * pix_res / aero_res).astype(int), (sely[0] * pix_res / aero_res).astype(int)
+        mask = masks[_] &  compute_mask                                                      
+        #mm   = mask[selxs,  selys]   
+        selx, sely = np.where(mask)     
+        #selx = selxs[mm]                                                             
+        #sely = selys[mm]      
+        pts1 = (selx * pix_res / aero_res).astype(int), (sely * pix_res / aero_res).astype(int)
+        mm = (pts1[0] < aero_shape[0]) & (pts1[1] < aero_shape[1])
+        selx, sely = selx[mm], sely[mm]
+        pts1 = pts1[0][mm], pts1[1][mm]
         pts2 = (ob.cors_pts * 500 / aero_res).astype(int)                          
         ppts = np.hstack([pts1, pts2])
         if ppts.shape[1]>0:
             inds, inv = np.unique(ppts, axis=1, return_inverse=True)
-        
             to_compute.append(inds)
             fine_inds.append(  inv[:len(pts1[0])])
             coarse_inds.append(inv[len(pts1[0]):])
@@ -1103,7 +1157,7 @@ def coarse_cost(xps, obs, coarse_inds, to_compute, band_weight, aero_shape, aero
             dJs.append(np.zeros((2,) + aero_shape))
     return Js, np.array(dJs)
 
-def fine_cost(xps, toas, fine_inds, to_compute, band_weight, bands, fine_xys, aero_shape):
+def fine_cost(xps, toas, fine_inds, to_compute, band_weight, bands, fine_xys, aero_shape, aero_res, pix_res):
 
     all_surs, all_surs_dH, valid_masks = [], [], []
 
@@ -1114,27 +1168,31 @@ def fine_cost(xps, toas, fine_inds, to_compute, band_weight, bands, fine_xys, ae
             xap_Hs, xbp_Hs, xcp_Hs, xap_dHs, xbp_dHs, xcp_dHs = xps[_]
             xap_H,  xbp_H,  xcp_H,  xap_dH,  xbp_dH,  xcp_dH  = xap_Hs[:, fine_ind], xbp_Hs[:, fine_ind], xcp_Hs[:, fine_ind], \
                                                                 xap_dHs[:, fine_ind], xbp_dHs[:, fine_ind], xcp_dHs[:, fine_ind]
-            pts = to_compute[_][:,fine_ind]
+            # pts = to_compute[_][:,fine_ind]
             selx, sely = fine_xys[_]
-            surs = 0       
-            dHs  = 0               
+            # surs = 0       
+            # dHs  = 0               
             band = bands[_]
-            for i in range(4):
-                sur, dH = cal_sur(xap_H,  xbp_H,  xcp_H,  xap_dH,  xbp_dH,  xcp_dH, toa[band][:, selx[i], sely[i]].data)
-                surs += sur
-                dHs  += dH
-            surs /= 4
-            dHs  /= 4
+            # num_pixels = min(selx.shape[0], 100)
+            #for i in range(num_pixels):
+            sur, dH = cal_sur(xap_H,  xbp_H,  xcp_H,  xap_dH,  xbp_dH,  xcp_dH, toa[band][:, selx, sely].data)
+            #     surs += sur
+            #     dHs  += dH
+            # surs /= num_pixels
+            # dHs  /= num_pixels
         
-            temp = np.zeros((7,) + aero_shape + (1,))
-            temp[:, pts[0], pts[1]] = surs
+            # instead we create a full image
+            toa_shape = toa[0].shape
+            temp =  np.zeros((7,) + toa_shape + (1,))
+            temp[:, selx, sely] = sur
             all_surs.append(temp)   
-            temp = np.zeros((7,) + aero_shape + (2,))
-            temp[:, pts[0], pts[1]] = dH
+            
+            temp = np.zeros((7,) + toa_shape + (2,))
+            temp[:, selx, sely] = dH
             all_surs_dH.append(temp)
-
-            valid_mask = np.zeros(aero_shape)
-            valid_mask[pts[0], pts[1]] = 1
+            
+            valid_mask = np.zeros(toa_shape)
+            valid_mask[selx, sely] = 1
             
             valid_mask[0,  :] = 0
             valid_mask[:,  0] = 0
@@ -1143,14 +1201,12 @@ def fine_cost(xps, toas, fine_inds, to_compute, band_weight, bands, fine_xys, ae
 
             valid_masks.append(valid_mask)       
         else:
-            surs = np.zeros((7, 0, 1))
-            dHs  = np.zeros((7, 0, 2))
-
-            temp = np.zeros((7,) + aero_shape + (1,))
+            toa_shape = toa[0].shape
+            temp = np.zeros((7,) + toa_shape + (1,))
             all_surs.append(temp)    
-            temp = np.zeros((7,) + aero_shape + (2,))
+            temp = np.zeros((7,) + toa_shape + (2,))
             all_surs_dH.append(temp) 
-            valid_mask = np.zeros(aero_shape)
+            valid_mask = np.zeros(toa_shape)
             valid_mask[0,  :] = 0    
             valid_mask[:,  0] = 0    
             valid_mask[-1, :] = 0    
@@ -1158,11 +1214,13 @@ def fine_cost(xps, toas, fine_inds, to_compute, band_weight, bands, fine_xys, ae
                                      
             valid_masks.append(valid_mask)       
 
-
     count_sum = np.sum(valid_masks, axis=0)[None, ..., None]
     mean_surs = np.sum(all_surs,    axis=0) / count_sum
     mean_dHs  = np.sum(all_surs_dH, axis=0) / count_sum
-        
+    # D[1/2*(a(x) - (a(x)+b(x)+g(x)+d(x))/4)^2 + 
+    #   1/2*(b(x) - (a(x)+b(x)+g(x)+d(x))/4)^2 + 
+    #   1/2*(g(x) - (a(x)+b(x)+g(x)+d(x))/4)^2 + 
+    #   1/2*(d(x) - (a(x)+b(x)+g(x)+d(x))/4)^2, x]
     Js         = 0
     dJs        = []
     for i in range(len(all_surs)):
@@ -1173,13 +1231,26 @@ def fine_cost(xps, toas, fine_inds, to_compute, band_weight, bands, fine_xys, ae
         dJ[:, valid_masks[i] == 0] = 0
         Js   += J * band_weight[...,None,None,None]
         dJs.append(dJ * band_weight[...,None,None,None])
-        
-    return Js.sum(axis=(0,3)) /0.01**2 , np.array(dJs).sum(axis=1).transpose(0, 3, 1, 2) / 0.01**2
+    
+    Js  = Js.sum(axis=(0,3)) /0.01**2
+    dJs = np.array(dJs).sum(axis=1) / 0.01**2
 
-
+    pix_area   = int(np.ceil(aero_res / pix_res)) 
+    ratx, raty = int(aero_shape[0] * pix_area), int(aero_shape[1] * pix_area)
+    temp = np.zeros((ratx, raty))                         
+    # to guarentee  consistent shape   
+    temp[:min(ratx, toa_shape[0]), :min(raty,toa_shape[1])] = Js[:min(ratx, toa_shape[0]), :min(raty,toa_shape[1])]
+    Js  = temp.reshape(aero_shape[0], pix_area, aero_shape[1], pix_area).sum(axis = (1,3))
+    
+    temp = np.zeros((len(all_surs), ratx, raty, 2))                          
+    # to guarentee  consistent shape   
+    temp[:, :min(ratx, toa_shape[0]), :min(raty,toa_shape[1]), :] = dJs[:, :min(ratx, toa_shape[0]), :min(raty,toa_shape[1]), :]
+    dJs  = temp.reshape(len(all_surs), aero_shape[0], pix_area, aero_shape[1], pix_area, 2).sum(axis = (2,4))
+    
+    return  Js, dJs.transpose(0, 3, 1, 2)
 
 def get_starting_aots(obs, auxs, aero_res):
-    iso_tnn = Two_NN(tf_model_file='/home/ucfafyi/DATA/Prosail/Inverse_6S_AOT_iso.h5')
+    iso_tnn = Two_NN(np_model_file= file_path + '/emus/Inverse_6S_AOT_iso.npz')
     aots  = []
     shape = auxs[0].priors[0].shape 
     for i in range(len(obs)):
@@ -1209,37 +1280,45 @@ def get_s2_aots(auxs, toas, aero_res, pix_res):
     points = np.repeat(np.arange(shape[0]), shape[1]), np.tile(np.arange(shape[1]), shape[0])
     points = (np.array(points) * aero_res / pix_res).astype(int).T 
     choosen_bands = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    # The bounds for training samples of AERONET observations
+    bands_min = [0.11572497, 0.08986528, 0.07280412, 0.05007033, 0.06228712, 0.06849915, 0.07015634, 0.06554198, 0.06809415, 0.02089167, 0.00080242, 0.04392302, 0.03012728]
+    bands_max = [0.32072931, 0.30801709, 0.32420026, 0.38214899, 0.3951169 , 0.41631785, 0.44391895, 0.42444658, 0.46161492, 0.19927658, 0.00870671, 0.39533241, 0.32505772]
     for i in range(len(toas)):
         toa = toas[i]
         aux = auxs[i]
         aero_refs = []
-        for band in choosen_bands:
+        mask = True
+        for _, band in enumerate(choosen_bands):
             temp   = toa[band].copy()                                                                                                                                            
             temp[toa[band].mask] = np.nan
             ref = points_convolve(temp, kern, points)
+            mask = mask & (ref >= bands_min[_]) & (ref <= bands_max[_])
             aero_refs.append(ref) 
-        mask = np.isnan(aero_refs).any(axis=0).reshape(shape)                  
+        mask = (mask & np.isfinite(aero_refs).any(axis=0))                  
         xx = np.vstack([np.array(aero_refs), np.array([aux.sza.ravel(), 
                         aux.vza[4].ravel(), aux.raa[4].ravel(), 
                         aux.priors[-1].ravel(), aux.ele.ravel()/10.])])
         #iX = np.vstack([np.array([b9, b8]).reshape(2,-1), cons.reshape(5, -1)])
-
-        aot = np.exp(-1*gbm.predict(xx.T).reshape(shape).astype(float))
-        aot[mask] = np.nan
-        aot_min, aot_median, aot_max = np.nanpercentile(aot, [5, 50, 95])
-        good_aot =  (aot > aot_min) & (aot < aot_max) 
-        indx, indy = np.where(good_aot)
-        myInterpolator = NearestNDInterpolator((indx, indy), aot[good_aot]) 
-        grid_x, grid_y = np.mgrid[0:shape[0]:1, 0:shape[1]:1,]
-        aot = myInterpolator(grid_x, grid_y)
-        aot = smoothn(aot, isrobust=True, TolZ=1e-6, W = 100*((aot >= aot_min) & (aot <=aot_max)), s=10, MaxIter=1000)[0]
-        aots.append(aot)    
+        aot = np.exp(-1*gbm.predict(xx.T).astype(float))
+        #aot = np.exp(-1*gbm.predict(xx.T).reshape(shape).astype(float))
+        #aot[mask] = np.nan
+        if mask.sum()>3:
+            aot_min, aot_median, aot_max = np.nanpercentile(aot[mask], [5, 50, 95])
+            good_aot =  (aot >= aot_min) & (aot <= aot_max) 
+            indx, indy = np.where(good_aot.reshape(shape))
+            myInterpolator = NearestNDInterpolator((indx, indy), aot[good_aot]) 
+            grid_x, grid_y = np.mgrid[0:shape[0]:1, 0:shape[1]:1,]
+            aot = myInterpolator(grid_x, grid_y)
+            aot = smoothn(aot, isrobust=True, TolZ=1e-6, W = 100*((aot >= aot_min) & (aot <=aot_max)), s=10, MaxIter=1000)[0]
+        else:
+            aot = np.nanmedian(aot)*np.ones(shape)    
+        aots.append(aot)
     return aots
 
 
 def get_starting_tcwvs(auxs, toas, aero_res, pix_res):
 
-    iso_tcwv = Two_NN(np_model_file = '/home/ucfafyi/DATA/BRDF_coupling/iso_tcwv_no_aot.npz')
+    iso_tcwv = Two_NN(np_model_file = file_path + '/emus/S2_TCWV.npz')
     tcwvs = []
     area = np.ceil(aero_res / pix_res).astype(int)                                          
     kern = np.ones((area, area)) / (area*area)                                              
@@ -1257,7 +1336,7 @@ def get_starting_tcwvs(auxs, toas, aero_res, pix_res):
         temp[toa[8].mask] = np.nan 
         b8   = points_convolve(temp, kern, points)
                                  
-        xx = np.array([b9, b8, aux.sza.ravel(), aux.vza[4].ravel(), aux.raa[4].ravel(), aux.priors[-1].ravel(), aux.ele.ravel()])
+        xx = np.array([b9, b8, aux.sza.ravel(), aux.vza[4].ravel(), aux.raa[4].ravel(), aux.priors[-1].ravel(), aux.ele.ravel()/10.])
         #iX = np.vstack([np.array([b9, b8]).reshape(2,-1), cons.reshape(5, -1)])
         tcwv = iso_tcwv.predict(xx.T)[0].ravel()
         tcwvs.append(tcwv.reshape(shape).astype(float))
@@ -1265,31 +1344,28 @@ def get_starting_tcwvs(auxs, toas, aero_res, pix_res):
     return tcwvs
 
 
-def cost_cost(p, s2_obs, l8_obs, s2_toas, s2_emus, s2_auxs, masks, l8_toas,l8_emus, l8_auxs, pix_res, aero_res, target_mask, gamma1, gamma2, alpha):
+def cost_cost(p, s2_obs, l8_obs, s2_toas, s2_emus, s2_auxs, masks, l8_toas,l8_emus, l8_auxs, pix_res, aero_res, to_compute, fine_inds, coarse_inds, fine_xys, gamma1, gamma2, alpha):
     
     band_weight = np.array([0.442, 0.469, 0.555, 0.645, 0.859, 1.64 , 2.13 ])**alpha 
     band_weight = band_weight
     bands   = [[0, 1, 2, 3, 8, 11, 12]] * len(s2_toas) + [[0, 1, 2, 3, 4, 5, 6]] * len(l8_toas)
 
     aero_shape = s2_auxs[0].sza.shape
-    toa_shape  = s2_toas[0][0].shape
-    to_compute, fine_inds, coarse_inds, fine_xys = get_targets(s2_obs + l8_obs, masks, pix_res, aero_res, target_mask, aero_shape, toa_shape)
-    xps = get_xps(p, s2_emus + l8_emus, s2_auxs + l8_auxs, to_compute)
+    # toa_shape  = s2_toas[0][0].shape
+    # to_compute, fine_inds, coarse_inds, fine_xys = get_targets(s2_obs + l8_obs, masks, pix_res, aero_res, target_mask, aero_shape, toa_shape)
 
+    xps = get_xps(p, s2_emus + l8_emus, s2_auxs + l8_auxs, to_compute)
     smooth_J, smooth_dJ = smooth_cost(p, s2_auxs + l8_auxs, gamma1, gamma2)
     prior_J, prior_dJ   = prior_cost( p, s2_auxs + l8_auxs)
-    fine_J, fine_dJ     = fine_cost(  xps, s2_toas + l8_toas, fine_inds,   to_compute, band_weight, bands, fine_xys, aero_shape)
+    fine_J, fine_dJ     = fine_cost(  xps, s2_toas + l8_toas, fine_inds,   to_compute, band_weight, bands, fine_xys, aero_shape, aero_res, pix_res)
     coarse_J, coarse_dJ = coarse_cost(xps, s2_obs  + l8_obs,  coarse_inds, to_compute, band_weight[1:], aero_shape, aero_res)
     cost_mask = (fine_J==0) #& (coarse_J==0)
     prior_J [     cost_mask] = 0
     prior_dJ[:,:, cost_mask] = 0
-
     J  = coarse_J  + fine_J + smooth_J   + prior_J
     dJ = coarse_dJ + fine_dJ + smooth_dJ + prior_dJ
     
     return J.sum(), dJ.reshape(dJ.shape[0]*dJ.shape[1],-1).reshape(-1) 
-
-
 
 def get_p0(s2_obs, l8_obs, s2_auxs, l8_auxs, s2_toas, aero_res, pix_res):
     p0 = [] 
@@ -1345,11 +1421,14 @@ def grid_conversion(array, new_shape):
     rs, cs = array.shape
     x, y   = np.arange(rs), np.arange(cs)
     kx = 3 if rs > 3 else 1                       
-    ky = 3 if cs > 3 else 1                       
-    f      = interpolate.RectBivariateSpline(x, y, array, kx=kx, ky=ky, s=0)
-    nx, ny = new_shape
-    nx, ny = 1. * np.arange(nx) / nx * rs, 1. * np.arange(ny) / ny * cs
-    znew   = f(nx, ny)
+    ky = 3 if cs > 3 else 1
+    if   (rs > 3 ) & (cs > 3):                    
+        f      = interpolate.RectBivariateSpline(x, y, array, kx=kx, ky=ky, s=0)
+        nx, ny = new_shape
+        nx, ny = 1. * np.arange(nx) / nx * rs, 1. * np.arange(ny) / ny * cs
+        znew   = f(nx, ny)
+    else:
+        znew = np.ones(new_shape) * array.mean()
     return znew
 
 def sample_atmos(p, shape, new_shape):
@@ -1381,7 +1460,7 @@ def do_one_s2(fs):
 
     logger = create_logger()
     logger.propagate = False
-    aoi, s2_file, s2_fnames, l8_fnames = fs
+    aoi, middle_file, file_index, s2_fnames, l8_fnames = fs
     s2_files, l8_files = pre_processing(s2_fnames, l8_fnames)
     temporal_window = 1
     pix_res = 30
@@ -1400,7 +1479,7 @@ def do_one_s2(fs):
     logger.info('Getting optimal PSF parameters.')  
     possible_x_y, struct, gaus, pointXs, pointYs = cal_psf_points(pix_res, sur_x, sur_y)
     s2_obs = do_s2_psf(s2s, s2_toas, s2_clouds, s2_shadows, s2_surs, possible_x_y, struct, gaus, pointXs, pointYs) 
-    l8_obs = do_l8_pdf(l8s, l8_toas, l8_clouds, l8_shadows, l8_surs, possible_x_y, struct, gaus, pointXs, pointYs)
+    l8_obs = do_l8_psf(l8s, l8_toas, l8_clouds, l8_shadows, l8_surs, possible_x_y, struct, gaus, pointXs, pointYs)
 
     cams_dir  = '/vsicurl/http://www2.geog.ucl.ac.uk/~ucfafyi/cams/'
     dem       = '/vsicurl/http://www2.geog.ucl.ac.uk/~ucfafyi/eles/global_dem.vrt'
@@ -1410,8 +1489,8 @@ def do_one_s2(fs):
     old_shape = None
     logger.info('MultiGrid solver in process...')
     # [10000, 5000, 2500, 1000, 500, 240, 120]
-    for _, aero_res in enumerate([10000, 5000, 2500, 1000, 500, 240, 120]):
-        logger.info(bcolors.BLUE + '+++++++++++++++++++++++++++++++++++++++++++++++++'+bcolors.ENDC)
+    for _, aero_res in enumerate([ 10000, 5000, 2500, 1000, 500, 240, 120]):
+        logger.info(bcolors.BLUE + '+++++++++++++++++++++++++++++++++'+bcolors.ENDC)
         logger.info(bcolors.RED + 'Optimizing at resolution %d m' % (aero_res) + bcolors.ENDC)
         #aero_res = 250
         s2_auxs, l8_auxs = prepare_aux(s2s, l8s, aero_res, dstSRS, outputBounds, dem, cams_dir, s2_toas, pix_res)
@@ -1430,19 +1509,79 @@ def do_one_s2(fs):
             #     p0 = get_p0(s2_obs, l8_obs, s2_auxs, l8_auxs, s2_toas, aero_res, pix_res)
 
             #p0[:len(s2_auxs),1] = np.array(tcwvs)
-
+        aero_shape = s2_auxs[0].sza.shape
+        toa_shape  = s2_toas[0][0].shape
+        to_compute, fine_inds, coarse_inds, fine_xys = get_targets(s2_obs + l8_obs, masks, pix_res, aero_res, target_mask, aero_shape, toa_shape)
         bounds = get_ranges((total_obs, 2) + new_shape)
         psolve = optimize.minimize(cost_cost, p0.ravel(), jac=True, method='L-BFGS-B', bounds = bounds, 
-                                options={'disp': False, 'gtol': 1e-04, 'maxfun': 100, 'maxiter': 100, 'ftol': 1e-16}, 
-                                args =(s2_obs, l8_obs, s2_toas, s2_emus,s2_auxs, masks, l8_toas,l8_emus, l8_auxs, pix_res, aero_res, target_mask, 30, 5, -1.6))
+                                options={'disp': False, 'gtol': 1e-04, 'maxfun': 60, 'maxiter': 60, 'ftol': 1e-8, 'maxcor': 100}, 
+                                args =(s2_obs, l8_obs, s2_toas, s2_emus,s2_auxs, masks, l8_toas,l8_emus, l8_auxs, pix_res, aero_res, to_compute, fine_inds, coarse_inds, fine_xys, 30, 5, 0))
         ret.append(psolve.x.reshape((total_obs, 2) + new_shape))
         old_shape = new_shape 
         
         logger.info(bcolors.GREEN + str(psolve['message'].decode()) + bcolors.ENDC)
         logger.info(bcolors.GREEN + 'Iterations: %d'%int(psolve['nit']) + bcolors.ENDC)
         logger.info(bcolors.GREEN + 'Function calls: %d'%int(psolve['nfev']) +bcolors.ENDC)  
+
+    optimized_paras = ret[-1]
     
+    if 'MSIL1C' in middle_file:
+        para_index   = file_index
+        example_file = s2s[file_index].toa[0] 
+        file_header  = example_file.replace('B01.jp2', '')
+        cloud        = s2_clouds[file_index]
+        shadow       = s2_shadows[file_index]
+    else:
+        para_index   = file_index + len(s2s)
+        example_file = l8s[file_index].toa[0] 
+        file_header  = example_file.replace('B1.TIF', '')
+
+        cloud       = s2_clouds[file_index]
+        shadow      = s2_shadows[file_index]
+
+    cloud_shadow = cloud * 1. + shadow + 2.
+    posterious_aot, posterious_tcwv = optimized_paras[para_index]
+    
+    aot_fname, tcwv_fname = file_header + 'aot.tif', file_header + 'tcwv.tif'
+    cloud_fname           = file_header + 'cloud.tif'
+    
+    aot_g   = array_to_raster(aot_fname,   posterious_aot,  example_file)
+    tcwv_g  = array_to_raster(tcwv_fname,  posterious_tcwv, example_file)
+    cloud_g = array_to_raster(cloud_fname, cloud_shadow,    example_file)
+    aot_g.FlushCache()                           
+    tcwv_g.FlushCache()                           
+    cloud_g.FlushCache()  
+
     return ret
-ret = find_around_files(sites[1])
-fs = ret[8]
-ret = do_one_s2(fs)
+
+def array_to_raster(fname, array, example_file):    
+    if array.ndim == 2:                             
+        bands = 1                                   
+    elif array.ndim ==3:                            
+        bands = min(array.shape)                    
+        t = np.argsort(array.shape)                 
+        array = array.transpose(t)                  
+    else:                                           
+        raise IOError('Only 2 or 3 D array is supported.')                                                     
+    try:                                            
+        g = gdal.Open(example_file)                 
+    except:                                         
+        g = example_file                            
+    driver = gdal.GetDriverByName('GTiff')          
+    ds = driver.Create(fname, array.shape[-1], array.shape[-2], bands, gdal.GDT_Float32)                       
+    ds.SetProjection(g.GetProjection())             
+    geotransform    = list(g.GetGeoTransform())     
+    geotransform[1] = geotransform[1] * g.RasterXSize / (1. * array.shape[-1])                                 
+    geotransform[5] = geotransform[5] * g.RasterYSize / (1. * array.shape[-2])                                                                                                          
+    ds.SetGeoTransform(geotransform)                
+    if array.ndim == 3:                             
+        for i in range(bands):                      
+            ds.GetRasterBand(i+1).WriteArray(array[i])                                                         
+    else:                                           
+         ds.GetRasterBand(1).WriteArray(array)                                                                                                           
+    ds                                              
+    return ds    
+
+ret = find_ground_files(sites[1])
+fs = ret[0]
+# ret = do_one_s2(fs)
