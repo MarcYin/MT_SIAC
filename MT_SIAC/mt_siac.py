@@ -1555,7 +1555,7 @@ def do_one_s2(fs):
     s2_emus, l8_emus = load_emus(s2s, l8s, s2_bands, l8_bands)
     # [10000, 5000, 2500, 1000, 500, 240, 120]
     for _, aero_res in enumerate([ 10000, 5000, 2500, 1000, 500, 250]):
-        logger.info(bcolors.BLUE + '+++++++++++++++++++++++++++++++++'+bcolors.ENDC)
+        logger.info(bcolors.BLUE + '++++++++++++++++++++++++++++++++++++++++++++++++'+bcolors.ENDC)
         logger.info(bcolors.RED + 'Optimizing at resolution %d m' % (aero_res) + bcolors.ENDC)
         #aero_res = 250
         s2_auxs, l8_auxs = prepare_aux(s2s, l8s, aero_res, dstSRS, outputBounds, dem, cams_dir, s2_toas, pix_res, s2_bands, l8_bands)
@@ -1567,9 +1567,21 @@ def do_one_s2(fs):
         new_shape = s2_auxs[0].ele.shape
         if _ ==0:
             p0 = get_p0(s2_obs, l8_obs, s2_auxs, l8_auxs, s2_toas, aero_res, pix_res)
+            p0_aot  = p0.reshape(len(s2_obs) + len(l8_obs), 2, -1)[:,0].mean(axis=1)
+            p0_tcwv = p0.reshape(len(s2_obs) + len(l8_obs), 2, -1)[:,1].mean(axis=1)
+            p0_aot  = ['%.02f'%i for i in p0_aot]
+            p0_tcwv = ['%.02f'%i for i in p0_tcwv]
+            logger.info('Starting mean AOTs : %s'%(', '.join(p0_aot)))
+            logger.info('Starting mean TCWVs: %s'%(', '.join(p0_tcwv)))
         else:
             pp = ret[-1]
-            p0 = sample_atmos(pp, old_shape, new_shape)  
+            p0 = sample_atmos(pp, old_shape, new_shape) 
+            p0_aot  = p0.reshape(len(s2_obs) + len(l8_obs), 2, -1)[:,0].mean(axis=1)
+            p0_tcwv = p0.reshape(len(s2_obs) + len(l8_obs), 2, -1)[:,1].mean(axis=1)
+            p0_aot  = ['%.02f'%i for i in p0_aot]
+            p0_tcwv = ['%.02f'%i for i in p0_tcwv]
+            logger.info('Starting mean AOTs : %s'%(', '.join(p0_aot)))
+            logger.info('Starting mean TCWVs: %s'%(', '.join(p0_tcwv))) 
             # for np.isnan(p0).any():
             #     p0 = get_p0(s2_obs, l8_obs, s2_auxs, l8_auxs, s2_toas, aero_res, pix_res)
 
@@ -1580,7 +1592,7 @@ def do_one_s2(fs):
         bounds = get_ranges((total_obs, 2) + new_shape)
         psolve = optimize.minimize(cost_cost, p0.ravel(), jac=True, method='L-BFGS-B', bounds = bounds, 
                                 options={'disp': False, 'gtol': 1e-04, 'maxfun': 60, 'maxiter': 60, 'ftol': 1e-8, 'maxcor': 100}, 
-                                args =(s2_obs, l8_obs, s2_toas, s2_emus,s2_auxs, masks, l8_toas,l8_emus, l8_auxs, pix_res, aero_res, to_compute, fine_inds, coarse_inds, fine_xys, 30, 5, 0))
+                                args =(s2_obs, l8_obs, s2_toas, s2_emus,s2_auxs, masks, l8_toas,l8_emus, l8_auxs, pix_res, aero_res, to_compute, fine_inds, coarse_inds, fine_xys, 10, 5, 0))
         ret.append(psolve.x.reshape((total_obs, 2) + new_shape))
         old_shape = new_shape 
         
