@@ -46,12 +46,11 @@ class bcolors:
     UNDERLINE = '\033[4m'
 
 
-sites = [i.split('/')[-2] for i in glob('/data/nemesis/acix_2/S2s_ground_30/*/')] 
 
 def do_one_site(site):
-    s2_fnames = glob('/data/nemesis/acix_2/S2s_30/%s/*'%site)
-    l8_fnames = glob('/data/nemesis/acix_2/L8s_30_LZW/%s/*'%site)
-    #aoi = glob('/data/nemesis/acix_2/%s_location.json'%site)[0]
+    s2_fnames = glob(acix_2 + '/S2s_30/%s/*'%site)
+    l8_fnames = glob(acix_2 + '/L8s_30_LZW/%s/*'%site)
+    #aoi = glob(acix_2 + '/%s_location.json'%site)[0]
     s2_times = [datetime.datetime.strptime(i.split('_MSIL1C_')[1][:8], '%Y%m%d') for i in s2_fnames]
     l8_times = [datetime.datetime.strptime(i.split('LC08_')[1][12:20], '%Y%m%d') for i in l8_fnames]
     s2_files = sorted(s2_fnames, key = lambda s2_fname: s2_times[s2_fnames.index(s2_fname)])
@@ -62,9 +61,9 @@ def do_one_site(site):
     return s2_files, l8_files, s2_times, l8_times
 
 def do_one_ground_site(site):
-    s2_fnames = glob('/data/nemesis/acix_2/S2s_ground_30/%s/*'%site)
-    l8_fnames = glob('/data/nemesis/acix_2/L8s_30_LZW_ground/%s/*'%site)
-    #aoi = glob('/data/nemesis/acix_2/%s_location.json'%site)[0]
+    s2_fnames = glob(acix_2 + '/S2s_ground_30/%s/*'%site)
+    l8_fnames = glob(acix_2 + '/L8s_30_LZW_ground/%s/*'%site)
+    #aoi = glob(acix_2 + '/%s_location.json'%site)[0]
     s2_times = [datetime.datetime.strptime(i.split('_MSIL1C_')[1][:8], '%Y%m%d') for i in s2_fnames]
     l8_times = [datetime.datetime.strptime(i.split('LC08_')[1][12:20], '%Y%m%d') for i in l8_fnames]
     s2_files = sorted(s2_fnames, key = lambda s2_fname: s2_times[s2_fnames.index(s2_fname)])
@@ -89,7 +88,7 @@ def get_location():
         lat = lats[ii]
         lon = lons[ii]
         tile = m.toMGRS(lat, lon, MGRSPrecision=0).decode()
-        fs = glob('/data/nemesis/acix_2/S2s_30/*/*' + tile + '*.SAFE/GR*/*/IMG_DATA/*B02.jp2')
+        fs = glob(acix_2 + '/S2s_30/*/*' + tile + '*.SAFE/GR*/*/IMG_DATA/*B02.jp2')
         if len(fs) <= 0:
             continue
         g = gdal.Open(fs[0])
@@ -137,7 +136,7 @@ def pre_processing(s2_fnames, l8_fnames):
 
 def find_around_files(site):
     s2_files, l8_files, s2_times, l8_times = do_one_site(site)
-    aoi = glob('/data/nemesis/acix_2/%s_location.json'%site)[0] 
+    aoi = glob(acix_2 + '/%s_location.json'%site)[0] 
     res = [] 
     for i in s2_times: 
         s2_fnames = [] 
@@ -153,7 +152,7 @@ def find_around_files(site):
 
 def find_ground_files(site):
     s2_files, l8_files, s2_times, l8_times = do_one_ground_site(site)
-    aoi = glob('/data/nemesis/acix_2/%s_location.json'%site)[0] 
+    aoi = glob(acix_2 + '/%s_location.json'%site)[0] 
     res = [] 
     for i in s2_times: 
         s2_fnames = [] 
@@ -194,17 +193,15 @@ def warp_data(fname, outputBounds,  xRes, yRes,  dstSRS):
     sinu = "+proj=sinu +lon_0=0 +x_0=0 +y_0=0 +a=6371007.181 +b=6371007.181 +units=m +no_defs"
     modis_sinu.ImportFromProj4 (sinu)
     g = gdal.Warp('',fname, format = 'MEM',  dstSRS = dstSRS, resampleAlg = 0, outputType = gdal.GDT_Float32,
-                  outputBounds=outputBounds, xRes = xRes, yRes = yRes, srcSRS=modis_sinu, warpOptions = ['NUM_THREADS=ALL_CPUS']) 
+                  outputBounds=outputBounds, xRes = xRes, yRes = yRes, srcSRS=modis_sinu, )  # warpOptions = ['NUM_THREADS=ALL_CPUS']
     return g.ReadAsArray() 
 
 def read_MCD43(fnames, dstSRS, outputBounds):
     par = partial(warp_data, outputBounds = outputBounds, xRes = 500, yRes = 500, dstSRS = dstSRS) 
-    # p = Pool()
-    # p = Pool(procs)
-    ret = list(map(par,  fnames))
-    #ret  =list( map(par,  view_ang_name_gmls))
-    # p.close()
-    # p.join()
+    p = Pool(procs)
+    ret = p.map(par,  fnames)
+    p.close()
+    p.join()
     n_files = int(len(fnames)/2)
     #ret = parmap(par, fnames) 
     das = np.array(ret[:n_files])     
@@ -1520,7 +1517,7 @@ def do_correction(toa, aux, aot, tcwv, emus, file_header, band_names, dstSRS, ou
         g.FlushCache()
     return sur, dH
 
-def do_one_s2(fs):
+def do_one_s2(fs, cams_dir, dem, mcd43_dir, mcd43_vrt_dir):
 
     logger = create_logger()
     logger.propagate = False
@@ -1532,7 +1529,7 @@ def do_one_s2(fs):
 
     s2s, s2_times, l8s, l8_times = get_obs(s2_files, l8_files)
     obs_times = np.unique(s2_times + l8_times).tolist()
-    vrt_dir = get_mcd43(aoi, obs_times, '/home/ucfafyi/hep/MCD43/', temporal_window = temporal_window , jasmin = True, vrt_dir='/home/ucfafyi/MCD43_VRT/')
+    vrt_dir = get_mcd43(aoi, obs_times, mcd43_dir, temporal_window = temporal_window , jasmin = True, vrt_dir=mcd43_vrt_dir)
     logger.info('Reading TOAs.')
     s2_toas, s2_surs, s2_uncs, s2_clds = read_s2(s2s, pix_res, dstSRS, outputBounds, vrt_dir, temporal_window = temporal_window )
     l8_toas, l8_surs, l8_uncs, l8_clds = read_l8(l8s, pix_res, dstSRS, outputBounds, vrt_dir, temporal_window = temporal_window )
@@ -1545,8 +1542,6 @@ def do_one_s2(fs):
     s2_obs = do_s2_psf(s2s, s2_toas, s2_clouds, s2_shadows, s2_surs, possible_x_y, struct, gaus, pointXs, pointYs) 
     l8_obs = do_l8_psf(l8s, l8_toas, l8_clouds, l8_shadows, l8_surs, possible_x_y, struct, gaus, pointXs, pointYs)
 
-    cams_dir  = '/vsicurl/http://www2.geog.ucl.ac.uk/~ucfafyi/cams/'
-    dem       = '/vsicurl/http://www2.geog.ucl.ac.uk/~ucfafyi/eles/global_dem.vrt'
     
     ret = []
     old_shape = None
@@ -1554,7 +1549,7 @@ def do_one_s2(fs):
     s2_bands, l8_bands = [0, 1, 2, 3, 8, 11, 12], [0, 1, 2, 3, 4, 5, 6]
     s2_emus, l8_emus = load_emus(s2s, l8s, s2_bands, l8_bands)
     # [10000, 5000, 2500, 1000, 500, 240, 120]
-    for _, aero_res in enumerate([ 10000, 5000, 2500, 1000, 500, 250]):
+    for _, aero_res in enumerate([ 10000, 5000, 2500, 1000, 500]):
         logger.info(bcolors.BLUE + '++++++++++++++++++++++++++++++++++++++++++++++++'+bcolors.ENDC)
         logger.info(bcolors.RED + 'Optimizing at resolution %d m' % (aero_res) + bcolors.ENDC)
         #aero_res = 250
@@ -1670,7 +1665,12 @@ def array_to_raster(fname, array, dstSRS, xMin, yMin, xRes, yRes, dtype):
          ds.GetRasterBand(1).WriteArray(array)                                                                                                           
     ds                                              
     return ds    
-
+acix_2        = '/data/nemesis/acix_2'
+sites = [i.split('/')[-2] for i in glob(acix_2 + '/S2s_ground_30/*/')] 
+cams_dir      = '/vsicurl/http://www2.geog.ucl.ac.uk/~ucfafyi/cams/'
+dem           = '/vsicurl/http://www2.geog.ucl.ac.uk/~ucfafyi/eles/global_dem.vrt'
+mcd43_dir     = '/home/ucfafyi/hep/MCD43/'
+mcd43_vrt_dir = '/home/ucfafyi/MCD43_VRT/'
 fss = find_ground_files(sites[1])
 # for fs in fss[-5:]:
-#     ret = do_one_s2(fs)
+#     ret = do_one_s2(fs, cams_dir, dem, mcd43_dir, mcd43_vrt_dir)
