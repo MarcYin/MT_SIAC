@@ -1244,8 +1244,8 @@ def fine_cost(xps, toas, fine_inds, to_compute, band_weight, bands, fine_xys, ae
         Js   += J * band_weight[...,None,None,None]
         dJs.append(dJ * band_weight[...,None,None,None])
     
-    Js  = Js.sum(axis=(0,3)) /0.05**2
-    dJs = np.array(dJs).sum(axis=1) / 0.05**2
+    Js  = Js.sum(axis=(0,3)) /0.01**2
+    dJs = np.array(dJs).sum(axis=1) / 0.01**2
 
     pix_area   = int(np.ceil(aero_res / pix_res)) 
     ratx, raty = int(aero_shape[0] * pix_area), int(aero_shape[1] * pix_area)
@@ -1273,12 +1273,13 @@ def get_starting_aots(obs, auxs, aero_res):
         else:
             xx = np.vstack([ob.conv_toa[:2], ob.cors_sur[:2], np.ones_like(ob.cors_sur[:5]) * np.atleast_2d([aux.sza.mean(), aux.vza[0].mean(), aux.raa[0][0,0], aux.priors[2].mean(), aux.ele.mean()]).T]) 
             aot   = iso_tnn.predict(xx.T)[0].ravel() 
-            aot_min, aot_max = np.nanpercentile(aot, [15, 85])
-            indx, indy = (ob.cors_pts * 500 / aero_res).astype(int)
-            myInterpolator = NearestNDInterpolator((indx, indy), aot) 
-            grid_x, grid_y = np.mgrid[0:shape[0]:1, 0:shape[1]:1,]
-            aot = myInterpolator(grid_x, grid_y)
-            aot = smoothn(aot, isrobust=True, TolZ=1e-6, W = 100*((aot >= aot_min) & (aot <=aot_max)), s=10, MaxIter=1000)[0]
+            # aot_min, aot_max = np.nanpercentile(aot, [15, 85])
+            # indx, indy = (ob.cors_pts * 500 / aero_res).astype(int)
+            # myInterpolator = NearestNDInterpolator((indx, indy), aot) 
+            # grid_x, grid_y = np.mgrid[0:shape[0]:1, 0:shape[1]:1,]
+            # aot = myInterpolator(grid_x, grid_y)
+            # aot = smoothn(aot, isrobust=True, TolZ=1e-6, W = 100*((aot >= aot_min) & (aot <=aot_max)), s=10, MaxIter=1000)[0]
+            aot = np.nanmedian(aot)*np.ones(shape)
         aots.append(aot.astype(float))
     return aots
 
@@ -1314,16 +1315,16 @@ def get_s2_aots(auxs, toas, aero_res, pix_res):
         aot = np.exp(-1*gbm.predict(xx.T).astype(float))
         #aot = np.exp(-1*gbm.predict(xx.T).reshape(shape).astype(float))
         #aot[mask] = np.nan
-        if mask.sum()>3:
-            aot_min, aot_median, aot_max = np.nanpercentile(aot[mask], [5, 50, 95])
-            good_aot =  (aot >= aot_min) & (aot <= aot_max) 
-            indx, indy = np.where(good_aot.reshape(shape))
-            myInterpolator = NearestNDInterpolator((indx, indy), aot[good_aot]) 
-            grid_x, grid_y = np.mgrid[0:shape[0]:1, 0:shape[1]:1,]
-            aot = myInterpolator(grid_x, grid_y)
-            aot = smoothn(aot, isrobust=True, TolZ=1e-6, W = 100*((aot >= aot_min) & (aot <=aot_max)), s=10, MaxIter=1000)[0]
-        else:
-            aot = np.nanmedian(aot)*np.ones(shape)    
+        #if mask.sum()>3:
+        #    aot_min, aot_median, aot_max = np.nanpercentile(aot[mask], [5, 50, 95])
+        #    good_aot =  (aot >= aot_min) & (aot <= aot_max) 
+        #    indx, indy = np.where(good_aot.reshape(shape))
+            #myInterpolator = NearestNDInterpolator((indx, indy), aot[good_aot]) 
+            #grid_x, grid_y = np.mgrid[0:shape[0]:1, 0:shape[1]:1,]
+            #aot = myInterpolator(grid_x, grid_y)
+            #aot = smoothn(aot, isrobust=True, TolZ=1e-6, W = 100*((aot >= aot_min) & (aot <=aot_max)), s=10, MaxIter=1000)[0]
+        #else:
+        aot = np.nanmedian(aot)*np.ones(shape)    
         aots.append(aot)
     return aots
 
@@ -1553,7 +1554,7 @@ def do_one_s2(fs):
     s2_bands, l8_bands = [0, 1, 2, 3, 8, 11, 12], [0, 1, 2, 3, 4, 5, 6]
     s2_emus, l8_emus = load_emus(s2s, l8s, s2_bands, l8_bands)
     # [10000, 5000, 2500, 1000, 500, 240, 120]
-    for _, aero_res in enumerate([ 10000, 5000, 2500, 1000, 500, 240, 120]):
+    for _, aero_res in enumerate([ 10000, 5000, 2500, 1000, 500, 250]):
         logger.info(bcolors.BLUE + '+++++++++++++++++++++++++++++++++'+bcolors.ENDC)
         logger.info(bcolors.RED + 'Optimizing at resolution %d m' % (aero_res) + bcolors.ENDC)
         #aero_res = 250
