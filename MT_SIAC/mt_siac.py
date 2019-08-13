@@ -32,7 +32,7 @@ from l8_preprocessing import l8_pre_processing
 from scipy.interpolate import NearestNDInterpolator
 from skimage.morphology import disk, binary_dilation, binary_closing, binary_opening
 procs =  multiprocessing.cpu_count()
-file_path = './' #os.path.dirname(os.path.realpath(__file__))
+file_path = os.path.dirname(os.path.realpath(__file__))
 from create_logger import create_logger
 
 class bcolors:
@@ -625,27 +625,35 @@ def cal_psf_points(pix_res, sur_x, sur_y):
     return possible_x_y, struct, gaus, pointXs, pointYs
 
 def spectral_mapping(sur, toa, sensor):
-    pmins = [[ 0.81793009, -1.55666629,  0.03879234,  0.02664923],
-             [ 0.50218134, -0.94398654, -0.36284911,  0.02876391],
-             [ 0.61609484, -1.12717424, -0.24037129,  0.0239488 ],
-             [ 0.67499803, -1.1988073 , -0.18331019,  0.02179141],
-             [ 0.23458873, -0.4048219 , -0.56692888,  0.02484466],
-             [ 0.08220874, -0.13492051, -0.74972003, -0.0331204 ]]
-    pmaxs = [[-0.76916621,  1.8524333 , -1.43464388,  0.34984857],
-             [-0.91464915,  1.96174322, -1.38302832,  0.28090987],
-             [-0.9199249 ,  1.9681306 , -1.3704881 ,  0.28924671],
-             [-0.87389258,  1.89261443, -1.30929285,  0.28807412],
-             [-0.71647392,  1.34657557, -0.79536697,  0.13551599],
-             [-0.34076349,  0.60544841, -0.34178543,  0.09669959]]
+    # pmins = [[ 0.81793009, -1.55666629,  0.03879234,  0.02664923],
+    #          [ 0.50218134, -0.94398654, -0.36284911,  0.02876391],
+    #          [ 0.61609484, -1.12717424, -0.24037129,  0.0239488 ],
+    #          [ 0.67499803, -1.1988073 , -0.18331019,  0.02179141],
+    #          [ 0.23458873, -0.4048219 , -0.56692888,  0.02484466],
+    #          [ 0.08220874, -0.13492051, -0.74972003, -0.0331204 ]]
+    # pmaxs = [[-0.76916621,  1.8524333 , -1.43464388,  0.34984857],
+    #          [-0.91464915,  1.96174322, -1.38302832,  0.28090987],
+    #          [-0.9199249 ,  1.9681306 , -1.3704881 ,  0.28924671],
+    #          [-0.87389258,  1.89261443, -1.30929285,  0.28807412],
+    #          [-0.71647392,  1.34657557, -0.79536697,  0.13551599],
+    #          [-0.34076349,  0.60544841, -0.34178543,  0.09669959]]
+    bounds =   [[-0.32435316099489,    0.33568660536379],
+                [-0.41078127804613995, 0.26727484647285],
+                [-0.38370667189964,    0.2757377221351],
+                [-0.3650360028266299,  0.27516957905042],
+                [-0.40238228381132995, 0.12769626138308],
+                [-0.50553709841854,    0.09334193977751]]
     spec_map     =  Two_NN(np_model_file=file_path+'/spectral_mapping/Aqua_%s_spectral_mapping.npz'%sensor)
     sur     = np.array(spec_map.predict(sur.T)).squeeze()
     mask = True                                 
     if sur.shape[1] > 3: 
         for i in range(len(toa)):           
-            pmin = np.poly1d(pmins[i])
-            pmax = np.poly1d(pmaxs[i])
+            # pmin = np.poly1d(pmins[i])
+            # pmax = np.poly1d(pmaxs[i])
+            pmin, pmax = bounds[i]
             diff = toa[i] - sur[i]
-            mas  = (diff >= pmin(sur[i])) & (diff <= pmax(sur[i]))
+            mas  = (diff >= pmin) & (diff <= pmax)
+            # mas  = (diff >= pmin(sur[i])) & (diff <= pmax(sur[i]))
             if mas.sum() > 0:
                 mmin, mmax = np.percentile(toa[i][mas] - sur[i][mas], [5, 95])
                 mas  = mas & (diff >= mmin) & (diff <= mmax)
