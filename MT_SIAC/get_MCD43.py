@@ -251,7 +251,7 @@ def get_mcd43(aoi, obs_times, mcd43_dir = './MCD43/', vrt_dir = './MCD43_VRT/', 
     logger.info('Querying MCD43 files...')
     ret = []
     for obs_time in obs_times:
-        ret += find_files(aoi, obs_time, mcd43_dir, temporal_window = temporal_window, jasmin=False)
+        ret += find_files(aoi, obs_time, mcd43_dir, temporal_window = temporal_window, jasmin=jasmin)
     ret = np.unique(ret).tolist()
     urls = [granule for granule in ret if granule.find("http") >= 0]
     url_fnames= [granule for granule in ret if granule.find("http") < 0]
@@ -275,6 +275,8 @@ def get_mcd43(aoi, obs_times, mcd43_dir = './MCD43/', vrt_dir = './MCD43_VRT/', 
     fnames_dates =  [[flist[all_dates==date].tolist(),date] for date in udates]
     logger.info('Creating daily VRT...')
     if jasmin:
+        if not os.path.exists(vrt_dir):
+            os.mkdir(vrt_dir)
         vrt_dir = tempfile.TemporaryDirectory(dir  =  vrt_dir).name + '/'
         if not os.path.exists(vrt_dir):
             os.mkdir(vrt_dir)
@@ -284,6 +286,8 @@ def get_mcd43(aoi, obs_times, mcd43_dir = './MCD43/', vrt_dir = './MCD43_VRT/', 
         p.close()                           
         p.join()
     else:
+        if not os.path.exists(vrt_dir):
+            os.mkdir(vrt_dir)
         par = partial(daily_vrt, vrt_dir = vrt_dir)
         p = Pool(len(fnames_dates))
         p.map(par, fnames_dates)

@@ -36,14 +36,12 @@ def get_raster_hv(example_file):
  
     # wgs84 = osr.SpatialReference( ) # Define a SpatialReference object
     # wgs84.ImportFromEPSG( 4326 ) # And set it to WGS84 using the EPSG code
-    # H_res_geo = osr.SpatialReference( )
-    
-    # H_res_geo.ImportFromWkt(raster_wkt)
+    H_res_geo = osr.SpatialReference()
+    H_res_geo.ImportFromWkt(g.GetProjection())
     # tx = osr.CoordinateTransformation(H_res_geo, wgs84)
-    
     modisProj= Proj('+proj=sinu +lon_0=0 +x_0=0 +y_0=0 +a=6371007.181 +b=6371007.181 +units=m +no_defs')
     wgs84Proj = Proj(init='epsg:4326')
-    raster_wkt = Proj(g.GetProjection())
+    raster_wkt = Proj(H_res_geo.ExportToProj4())
     xs = [geo_t[0], geo_t[0] + geo_t[1]*x_size, geo_t[0], geo_t[0] + geo_t[1]*x_size]
     ys = [geo_t[3], geo_t[3] + geo_t[5]*y_size, geo_t[3] + geo_t[5]*y_size, geo_t[3]]
 
@@ -83,7 +81,13 @@ def get_vector_hv(aoi):
             raise IOError('aoi has to be vector file or a ogr object')
     feature = og.GetLayer(0).GetFeature(0)
     coordinates = feature.geometry().GetGeometryRef(-0).GetPoints()
-    lon, lat  = np.array(coordinates).T
+    gg = feature.GetGeometryRef()  
+    sp = gg.GetSpatialReference()
+
+    wgs84Proj = Proj(init='epsg:4326')
+    vector_wkt = Proj(sp.ExportToProj4())
+    xs, ys  = np.array(coordinates).T
+    lon, lat = transform(vector_wkt, wgs84Proj, np.array(xs).ravel(), np.array(ys).ravel())
     hh, vv = mtile_cal(lat, lon)
     tiles  = ['h%02dv%02d'%(hh[i], vv[i]) for i in range(len(hh))]
     tiles  = np.unique(tiles)

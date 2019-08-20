@@ -4,6 +4,7 @@ import osr
 import ogr
 import mgrs
 import gdal
+import shutil
 import psutil
 import requests
 import datetime
@@ -18,7 +19,7 @@ import lightgbm as lgb
 from Two_NN import Two_NN
 from smoothn import smoothn
 from functools import partial
-from Get_S2 import get_s2_files
+# from Get_S2 import get_s2_files
 from get_MCD43 import get_mcd43
 from multiprocessing import Pool
 from scipy import ndimage, signal
@@ -27,6 +28,7 @@ from shapely.geometry import Point
 from collections import namedtuple
 from sklearn.externals import joblib 
 from scipy import optimize, interpolate
+from get_jasmin_s2 import find_on_jasmin
 from s2_preprocessing import s2_pre_processing
 from l8_preprocessing import l8_pre_processing
 from scipy.interpolate import NearestNDInterpolator
@@ -46,7 +48,6 @@ class bcolors:
     UNDERLINE = '\033[4m'
 
 
-
 def do_one_site(site):
     s2_fnames = glob(acix_2 + '/S2s_30/%s/*'%site)
     l8_fnames = glob(acix_2 + '/L8s_30_LZW/%s/*'%site)
@@ -60,9 +61,9 @@ def do_one_site(site):
     
     return s2_files, l8_files, s2_times, l8_times
 
-def do_one_ground_site(site):
-    s2_fnames = glob(acix_2 + '/S2s_ground_30/%s/*'%site)
-    l8_fnames = glob(acix_2 + '/L8s_30_LZW_ground/%s/*'%site)
+def do_one_site(site):
+    s2_fnames = glob(acix_2 + '/S2s*30/%s/*'%site)
+    l8_fnames = glob(acix_2 + '/L8s_30_LZW*/%s/*'%site)
     #aoi = glob(acix_2 + '/%s_location.json'%site)[0]
     s2_times = [datetime.datetime.strptime(i.split('_MSIL1C_')[1][:8], '%Y%m%d') for i in s2_fnames]
     l8_times = [datetime.datetime.strptime(i.split('LC08_')[1][12:20], '%Y%m%d') for i in l8_fnames]
@@ -88,8 +89,9 @@ def get_location():
         lat = lats[ii]
         lon = lons[ii]
         tile = m.toMGRS(lat, lon, MGRSPrecision=0).decode()
-        fs = glob(acix_2 + '/S2s_30/*/*' + tile + '*.SAFE/GR*/*/IMG_DATA/*B02.jp2')
+        fs = glob(acix_2 + '/S2s_30/' + site + '/*.SAFE/GR*/*/IMG_DATA/*B02.jp2')
         if len(fs) <= 0:
+            print(site)
             continue
         g = gdal.Open(fs[0])
         proj = g.GetProjectionRef()
@@ -114,10 +116,10 @@ def pre_processing(s2_fnames, l8_fnames):
     s2_files = []
     l8_files = []
     for s2_fname in s2_fnames:
-        ret = s2_pre_processing(s2_fname)    
+        ret = s2_pre_processing(s2_fname, temp_angle = True, s2_angle_dir = '/home/users/marcyin/acix/s2_angle/')    
         s2_files.append(ret[0])
     for l8_fname in l8_fnames:
-        ret = l8_pre_processing(l8_fname)    
+        ret = l8_pre_processing(l8_fname, temp_angle = True, l8_angle_dir = '/home/users/marcyin/acix/l8_angle/')    
         l8_files.append(ret[0])
     return s2_files, l8_files
 
@@ -150,32 +152,62 @@ def find_around_files(site):
         res.append([aoi, s2_files[s2_times.index(i)], s2_fnames, l8_fnames])
     return res
 
-def find_ground_files(site):
-    s2_files, l8_files, s2_times, l8_times = do_one_ground_site(site)
+def find_around_files(site):
+    s2_files, l8_files, s2_times, l8_times = do_one_site(site)
     aoi = glob(acix_2 + '/%s_location.json'%site)[0] 
     res = [] 
-    for i in s2_times: 
+    # for i in s2_times: 
+    for i, s2_file in enumerate(s2_files): 
+        s2_fnames = []
+        l8_fnames = []
+        s2_diff = [] 
+        l8_diff = [] 
+        for _, j in enumerate(s2_times): 
+            if (abs((j - s2_times[i]).days)<15) & (abs((j - s2_times[i]).days) not in s2_diff) & (s2_files[_] != s2_file): 
+                s2_fnames.append(s2_files[_]) 
+                s2_diff.append(abs((j - s2_times[i]).days))
+        for _, k in enumerate(l8_times): 
+            if (abs((k - s2_times[i]).days)<15) & (abs((k - s2_times[i]).days) not in l8_diff):
+                l8_fnames.append(l8_files[_]) 
+                l8_diff.append(abs((k - s2_times[i]).days))
+        middle_file = s2_file
+        diffs  = s2_diff + l8_diff
+        fnames = s2_fnames + l8_fnames
+        fnames = sorted(fnames, key = lambda kk: diffs[fnames.index(kk)])[:3]
         s2_fnames = [] 
         l8_fnames = []
-        for j in s2_times: 
-            if abs((j - i).days)<15: 
-                s2_fnames.append(s2_files[s2_times.index(j)]) 
-        for k in l8_times: 
-            if abs((k - i).days)<15: 
-                l8_fnames.append(l8_files[l8_times.index(k)]) 
-        middle_file = s2_files[s2_times.index(i)]
-        res.append([aoi, middle_file, s2_fnames.index(middle_file),s2_fnames, l8_fnames])
-    for i in l8_times: 
+        for fname in fnames:
+            if '_MSIL1C_' in fname:
+                s2_fnames.append(fname)
+            else:
+                l8_fnames.append(fname)
+        res.append([aoi, middle_file, 0, [s2_file,] + s2_fnames, l8_fnames])
+
+    for i, l8_file in enumerate(l8_files): 
         s2_fnames = [] 
         l8_fnames = []
-        for j in s2_times: 
-            if abs((j - i).days)<15: 
-                s2_fnames.append(s2_files[s2_times.index(j)]) 
-        for k in l8_times: 
-            if abs((k - i).days)<15: 
-                l8_fnames.append(l8_files[l8_times.index(k)]) 
-        middle_file = l8_files[l8_times.index(i)]
-        res.append([aoi, middle_file, l8_fnames.index(middle_file),s2_fnames, l8_fnames])
+        s2_diff = [] 
+        l8_diff = [] 
+        for _, j in enumerate(s2_times): 
+            if (abs((j - l8_times[i]).days)<15) & (abs((j - l8_times[i]).days) not in s2_diff): 
+                s2_fnames.append(s2_files[_]) 
+                s2_diff.append(abs((j - l8_times[i]).days))
+        for _, k in enumerate(l8_times): 
+            if (abs((k - l8_times[i]).days)<15) & (abs((k - l8_times[i]).days) not in l8_diff) & (l8_files[_] != l8_file): 
+                l8_fnames.append(l8_files[_])
+                l8_diff.append(abs((k - l8_times[i]).days)) 
+        middle_file = l8_file
+        diffs  = s2_diff + l8_diff
+        fnames = s2_fnames + l8_fnames
+        fnames = sorted(fnames, key = lambda i: diffs[fnames.index(i)])[:3]
+        s2_fnames = [] 
+        l8_fnames = []
+        for fname in fnames:
+            if '_MSIL1C_' in fname:
+                s2_fnames.append(fname)
+            else:
+                l8_fnames.append(fname)
+        res.append([aoi, middle_file, 0, s2_fnames, [l8_file,] + l8_fnames])
     return res
 
 def get_kk(angles):                                                                                                                                                                            
@@ -248,9 +280,6 @@ def get_boa(mcd43_dir, boa_bands, obs_time, outputBounds, dstSRS, temporal_filli
 #     data  = np.array(smoothn(da, s=10., smoothOrder=1., axis=0, TolZ=0.001, verbose=False, isrobust=True, W = w))[[0, 3],]                                                                                                                          
 #     return data[0], data[1]
 
-
-
-
 def read_l8(l8s, pix_res, dstSRS, outputBounds, vrt_dir, temporal_window ):
     l8_toas = []                             
     l8_surs = []                             
@@ -283,13 +312,17 @@ def read_l8(l8s, pix_res, dstSRS, outputBounds, vrt_dir, temporal_window ):
         das, qas = get_boa(vrt_dir, boa_bands, i.obs_time, outputBounds, dstSRS, temporal_filling = temporal_window )
         saa, sza = gdal.Warp('', i.sun_angs, format = 'MEM', outputBounds = outputBounds,
                              xRes = 500, yRes = 500, dstSRS = dstSRS, dstNodata=-32767, outputType = gdal.GDT_Int16).ReadAsArray() / 100
-        new_shp  = saa.shape                 
-        new_xys  = np.where(np.ones_like(sza))
-        f_interp = NearestNDInterpolator(np.where(sza>=0), sza[sza>=0])
-        sza = f_interp(new_xys).reshape(new_shp)
-        f_interp = NearestNDInterpolator(np.where(saa>-180), saa[saa>-180]) 
-        saa = f_interp(new_xys).reshape(new_shp)
-        bad_ang = (saa<-180.) | (sza < 0.)   
+        bad_ang = (saa<-180.) | (sza < 0.)
+        if (~bad_ang).sum()>3:
+            new_shp  = saa.shape                 
+            new_xys  = np.where(np.ones_like(sza))
+            f_interp = NearestNDInterpolator(np.where(sza>=0), sza[sza>=0])
+            sza = f_interp(new_xys).reshape(new_shp)
+            f_interp = NearestNDInterpolator(np.where(saa>-180), saa[saa>-180]) 
+            saa = f_interp(new_xys).reshape(new_shp)
+            bad_ang = (saa<-180.) | (sza < 0.)
+        else:
+            bad_ang = (saa<-180.) | (sza < 0.)
         l8_sur = []                          
         l8_unc = []                          
         for _, band in enumerate([1, 2, 3, 4, 5, 6]):
@@ -339,13 +372,17 @@ def read_s2(s2s, pix_res, dstSRS, outputBounds, vrt_dir, temporal_window):
         das, qas = get_boa(vrt_dir, boa_bands, i.obs_time, outputBounds, dstSRS, temporal_filling = temporal_window )
         saa, sza = gdal.Warp('', i.sun_angs, format = 'MEM', outputBounds = outputBounds, 
                              xRes = 500, yRes = 500, dstSRS = dstSRS, dstNodata=-32767, outputType = gdal.GDT_Int16).ReadAsArray() / 100
-        new_shp  = saa.shape                    
-        new_xys  = np.where(np.ones_like(sza))  
-        f_interp = NearestNDInterpolator(np.where(sza>=0), sza[sza>=0]) 
-        sza = f_interp(new_xys).reshape(new_shp)
-        f_interp = NearestNDInterpolator(np.where(saa>-180), saa[saa>-180]) 
-        saa = f_interp(new_xys).reshape(new_shp)
-        bad_ang = (saa<-180.) | (sza < 0.)      
+        bad_ang = (saa<-180.) | (sza < 0.)
+        if (~bad_ang).sum()>3:
+            new_shp  = saa.shape                    
+            new_xys  = np.where(np.ones_like(sza))  
+            f_interp = NearestNDInterpolator(np.where(sza>=0), sza[sza>=0]) 
+            sza = f_interp(new_xys).reshape(new_shp)
+            f_interp = NearestNDInterpolator(np.where(saa>-180), saa[saa>-180]) 
+            saa = f_interp(new_xys).reshape(new_shp)
+            bad_ang = (saa<-180.) | (sza < 0.)      
+        else:
+            bad_ang = (saa<-180.) | (sza < 0.)
         s2_sur = []                             
         s2_unc = []                             
         for _, band in enumerate([1, 2, 3, 8, 11, 12]):
@@ -515,14 +552,20 @@ def do_s2_psf(s2s, s2_toas, s2_clouds, s2_shadows, s2_surs, possible_x_y, struct
             mask   = np.zeros_like(p_xs).astype(bool)
         else:
             par = partial(cost, toa = data, sur = s2_surs[_][-1], pxs = p_xs, pys = p_ys, pcxs = p_corse_xs, pcys = p_corse_ys, gaus = gaus)
-            p   = Pool()                     
-            ret = p.map(par, possible_x_y)        
-            p.close()                        
-            p.join()                         
-            mind = np.nanargmin(np.array(ret, dtype=np.object)[:,0])
-            shift_x, shift_y   = possible_x_y[mind]
-            un_r, points, mask = ret[mind]   
-            logger.info('X_shift: %d, Y_shift: %d, rValue: %.02f'%(shift_x, shift_y, 1-un_r))
+            # p   = Pool()                     
+            ret = list(map(par, possible_x_y))        
+            # p.close()                        
+            # p.join()                         
+            costs = np.array(ret, dtype=np.object)[:,0].astype(float)             
+            if np.isfinite(costs).any():
+                mind = np.nanargmin(costs)
+                shift_x, shift_y   = possible_x_y[mind]
+                un_r, points, mask = ret[mind]   
+                logger.info('X_shift: %d, Y_shift: %d, rValue: %.02f'%(shift_x, shift_y, 1-un_r))
+            else:
+                logger.warning('PSF estimation failed and default values are used.')
+                un_r, points, mask = ret[114] 
+                logger.info('X_shift: %d, Y_shift: %d'%(-11, -16))
 
         s2_conv_toa = []          
         s2_cors_sur = []       
@@ -542,7 +585,7 @@ def do_s2_psf(s2s, s2_toas, s2_clouds, s2_shadows, s2_surs, possible_x_y, struct
     s2_obss = [] 
     for _, s2_toa in enumerate(s2s):
         s2_obs = namedtuple('s2_obs', 'cors_sur conv_toa cors_pts')
-        sensor = s2_toa[0].split('_MSIL1C_')[0][-3:]
+        sensor = s2_toa[2][0].split('_MSIL1C_')[0][-3:]
         mask, s2_cors_sur = spectral_mapping(s2_cors_surs[_], s2_conv_toas[_], sensor)
         #s2_cors_surs[_]   = np.array(s2_cors_sur)[:, mask]
         #s2_cors_pots[_]   = np.array(s2_cors_pots[_])[:, mask]
@@ -575,15 +618,20 @@ def do_l8_psf(l8s, l8_toas, l8_clouds, l8_shadows, l8_surs, possible_x_y, struct
             mask   = np.zeros_like(p_xs).astype(bool)
         else:
             par = partial(cost, toa = data, sur = l8_surs[_][-1], pxs = p_xs, pys = p_ys, pcxs = p_corse_xs, pcys = p_corse_ys, gaus = gaus)
-            p   = Pool()                     
-            ret = p.map(par, possible_x_y)        
-            p.close()                        
-            p.join()                         
-            mind = np.nanargmin(np.array(ret, dtype=np.object)[:,0])
-            shift_x, shift_y   = possible_x_y[mind]
-            un_r, points, mask = ret[mind]   
-            logger.info('X_shift: %d, Y_shift: %d, rValue: %.02f'%(shift_x, shift_y, 1-un_r))
-
+            #p   = Pool()                     
+            ret = list(map(par, possible_x_y))        
+            #p.close()                        
+            #p.join()           
+            costs = np.array(ret, dtype=np.object)[:,0].astype(float)              
+            if np.isfinite(costs).any():
+                mind = np.nanargmin(costs)
+                shift_x, shift_y   = possible_x_y[mind]
+                un_r, points, mask = ret[mind]   
+                logger.info('X_shift: %d, Y_shift: %d, rValue: %.02f'%(shift_x, shift_y, 1-un_r))
+            else:
+                logger.warning('PSF estimation failed and default values are used.')
+                un_r, points, mask = ret[114] 
+                logger.info('X_shift: %d, Y_shift: %d'%(-11, -16))
         l8_conv_toa = []          
         for band in [1, 2, 3, 4, 5, 6]:                                                                                                                                 
             data = l8_toa[band].data.copy()   
@@ -615,8 +663,8 @@ def cal_psf_points(pix_res, sur_x, sur_y):
     pointYs         = ((np.arange(sur_y) * 500) // pix_res ) 
     pointXs,pointYs = np.repeat(pointXs, len(pointYs)), np.tile(  pointYs, len(pointXs))
     gaus         = gaussian(xstd, ystd, norm = True)
- 
-    possible_x_y = [(np.arange(-25,25), np.arange(-25,25) +i) for i in range(-10, 10)]
+    # coming from the solving of a lot of tiles to reach smaller range
+    possible_x_y = [(np.arange(-25,-5), np.arange(-25,-5) +i) for i in range(-10, 10)]
     possible_x_y = np.array(possible_x_y).transpose(1,0,2).reshape(2, -1).T
     struct       = disk(5) 
     return possible_x_y, struct, gaus, pointXs, pointYs
@@ -709,6 +757,7 @@ def read_ang(ang, pix_res, dstSRS, outputBounds):
     g = gdal.Warp('', ang, format = 'MEM', outputBounds = outputBounds,
                              dstSRS = dstSRS, xRes = pix_res, yRes = pix_res, resampleAlg = 0)
     angs = g.ReadAsArray() / 100.  
+    
     return angs
 
 def prepare_aux(s2s, l8s, aero_res, dstSRS, outputBounds, dem, cams_dir, s2_toas, pix_res, s2_bands, l8_bands):
@@ -727,24 +776,28 @@ def prepare_aux(s2s, l8s, aero_res, dstSRS, outputBounds, dem, cams_dir, s2_toas
             raas.append(np.cos(np.deg2rad(raa)))                             
         s2_auxs.append(s2_aux(np.cos(np.deg2rad(sza)), vzas, raas, priors, prior_uncs, ele))
 
-    tcwvs = get_starting_tcwvs(s2_auxs, s2_toas, aero_res, pix_res)    
-    aots  = get_s2_aots(s2_auxs, s2_toas, aero_res, pix_res)                    
-    for _, s2_aux in enumerate(s2_auxs): 
+    # if len(s2_auxs)>0:
+    #     tcwvs = get_starting_tcwvs(s2_auxs, s2_toas, aero_res, pix_res)
+    #     aots  = get_s2_aots(s2_auxs, s2_toas, aero_res, pix_res)                    
+    # else:
+    #     tcwvs = []   
+    #     aots  = []
+    # for _, s2_aux in enumerate(s2_auxs): 
                             
-        tcwv = tcwvs[_] 
-        aot  = aots[_]    
-        median = np.nanmedian(tcwv)
-        mask = (tcwv > 0) & (tcwv < 8)
-        tcwv[~mask] = median
+    #     tcwv = tcwvs[_] 
+    #     aot  = aots[_]    
+    #     median = np.nanmedian(tcwv)
+    #     mask = (tcwv > 0) & (tcwv < 8)
+    #     tcwv[~mask] = median
                             
-        priors        = s2_aux.priors
-        priors[0]     = np.ones_like(tcwv)*np.nanmedian(aot)
-        priors[1]     = tcwv    
-        prior_uncs    = s2_aux.prior_uncs
-        prior_uncs[0] = 0.2
-        prior_uncs[1] = 0.5
-        s2_aux        = s2_aux._replace(priors = priors, prior_uncs = prior_uncs )
-        s2_auxs[_]    = s2_aux 
+    #     priors        = s2_aux.priors
+    #     priors[0]     = np.ones_like(tcwv)*np.nanmedian(aot)
+    #     priors[1]     = tcwv    
+    #     prior_uncs    = s2_aux.prior_uncs
+    #     prior_uncs[0] = 0.2
+    #     prior_uncs[1] = 0.5
+    #     s2_aux        = s2_aux._replace(priors = priors, prior_uncs = prior_uncs )
+    #     s2_auxs[_]    = s2_aux 
         
     l8_aux = namedtuple('l8_aux', 'sza vza raa priors prior_uncs ele')                     
     l8_auxs = [] 
@@ -785,7 +838,7 @@ def load_emus(s2s, l8s, s2_bands, l8_bands):
     s2_toa_bands = np.array(['B01', 'B02', 'B03','B04','B05' ,'B06', 'B07', 'B08','B8A', 'B09', 'B10', 'B11', 'B12'])[s2_bands] #['B01', 'B02', 'B03', 'B04', 'B8A', 'B11', 'B12']
     s2_emus      = []    
     for _, s2_toa in enumerate(s2s):
-        satellite = s2_toa[0].split('_MSIL1C_')[0][-3:]
+        satellite = s2_toa[2][0].split('_MSIL1C_')[0][-3:]
         s2_emu = read_xa_xb_xc('MSI', satellite, s2_toa_bands)
         s2_emus.append(s2_emu)
 
@@ -804,12 +857,12 @@ def get_obs(s2_files, l8_files):
     s2_times = []                        
     l8_times = []  
     for i in s2_files:                   
-        obs_time = datetime.datetime.strptime(i[0].split('_MSIL1C_')[1][:15], '%Y%m%dT%H%M%S')
+        obs_time = datetime.datetime.strptime(i[2][0].split('_MSIL1C_')[1][:15], '%Y%m%dT%H%M%S')
         s2_times.append(obs_time)        
         dat = np.array(i, dtype = np.object)[[0,1,2,3,-1]].tolist()
         s2s.append(s2_obs(dat[0], dat[1], dat[2], dat[3], dat[4], obs_time))
     for i in l8_files:                   
-        with open(i[-1]) as f:              
+        with open(i[-1], 'r') as f:              
             for line in f:                   
                 if 'DATE_ACQUIRED' in line:
                     date = line.split()[-1]  
@@ -849,7 +902,7 @@ def object_jac(xap_H, xbp_H, xcp_H, xap_dH, xbp_dH, xcp_dH, toa, sur, band_weigh
     band_weight = np.atleast_3d(band_weight).transpose(1,0,2)
     toa     = np.atleast_3d(toa)
     sur     = np.atleast_3d(sur)
-    boa_unc = 0.05
+    boa_unc = 0.015
 
     y        = xap_H * toa - xbp_H
 
@@ -1131,13 +1184,14 @@ def get_xps(p, emus, auxs, to_compute):
         pp     = p[_ * size * 2 : (_+1) * size * 2].reshape(2, shape[0], shape[1])
         pts    = to_compute[_]                                                 
         if pts.shape[1] > 0:
-            aot    = pp[0]               [   pts[0], pts[1]] 
-            tcwv   = pp[1]               [   pts[0], pts[1]]
-            sza    = np.array(aux.sza)   [   pts[0], pts[1]] 
-            vza    = np.array(aux.vza)   [:, pts[0], pts[1]] 
-            raa    = np.array(aux.raa)   [:, pts[0], pts[1]] 
-            ele    = np.array(aux.ele)   [   pts[0], pts[1]]
-            tco3   = np.array(aux.priors)[2, pts[0], pts[1]]
+            ppts1, ppts2 = np.minimum(pts[0], pp[0].shape[0]-1), np.minimum(pts[1], pp[0].shape[1]-1)
+            aot    = pp[0]               [   ppts1, ppts2] 
+            tcwv   = pp[1]               [   ppts1, ppts2]
+            sza    = np.array(aux.sza)   [   ppts1, ppts2] 
+            vza    = np.array(aux.vza)   [:, ppts1, ppts2] 
+            raa    = np.array(aux.raa)   [:, ppts1, ppts2] 
+            ele    = np.array(aux.ele)   [   ppts1, ppts2]
+            tco3   = np.array(aux.priors)[2, ppts1, ppts2]
             X      = [sza, vza, raa, aot, tcwv, tco3, ele]
             xps.append(predic_xps_all(X, emu))
         else:
@@ -1354,13 +1408,13 @@ def get_starting_tcwvs(auxs, toas, aero_res, pix_res):
     return tcwvs
 
 
-def cost_cost(p, s2_obs, l8_obs, s2_toas, s2_emus, s2_auxs, masks, l8_toas,l8_emus, l8_auxs, pix_res, aero_res, to_compute, fine_inds, coarse_inds, fine_xys, gamma1, gamma2, alpha):
+def cost_cost(p, s2_obs, l8_obs, s2_toas, s2_emus, s2_auxs, masks, l8_toas,l8_emus, l8_auxs, pix_res, aero_res, aero_shape, to_compute, fine_inds, coarse_inds, fine_xys, gamma1, gamma2, alpha):
     
     band_weight = np.array([0.442, 0.469, 0.555, 0.645, 0.859, 1.64 , 2.13 ])**alpha 
     band_weight = band_weight
     bands   = [[0, 1, 2, 3, 8, 11, 12]] * len(s2_toas) + [[0, 1, 2, 3, 4, 5, 6]] * len(l8_toas)
 
-    aero_shape = s2_auxs[0].sza.shape
+    # aero_shape = s2_auxs[0].sza.shape
     # toa_shape  = s2_toas[0][0].shape
     # to_compute, fine_inds, coarse_inds, fine_xys = get_targets(s2_obs + l8_obs, masks, pix_res, aero_res, target_mask, aero_shape, toa_shape)
 
@@ -1380,12 +1434,16 @@ def cost_cost(p, s2_obs, l8_obs, s2_toas, s2_emus, s2_auxs, masks, l8_toas,l8_em
 def get_p0(s2_obs, l8_obs, s2_auxs, l8_auxs, s2_toas, aero_res, pix_res):
     p0 = [] 
     aots = get_starting_aots(s2_obs  + l8_obs, s2_auxs + l8_auxs, aero_res)
-    tcwvs = get_starting_tcwvs(s2_auxs, s2_toas, aero_res, pix_res)
-
+    if len(s2_auxs)>0:
+        tcwvs = get_starting_tcwvs(s2_auxs, s2_toas, aero_res, pix_res)
+    else:
+        tcwvs = []
     for _, s2_aux in enumerate(s2_auxs): 
 
         tcwv = tcwvs[_]
         median = np.nanmedian(tcwv)
+        if not ((median>0) & (median<8)):
+            median = s2_aux.priors[1].mean()
         mask = (tcwv > 0) & (tcwv < 8)
         tcwv[~mask] = median
 
@@ -1406,6 +1464,8 @@ def get_p0(s2_obs, l8_obs, s2_auxs, l8_auxs, s2_toas, aero_res, pix_res):
         # median = np.nanmedian(aot)
         # aot[~mask] = median
         median = np.nanmedian(s2_aux.priors[0])
+        if not ((median>0) & (median<2.5)):
+            median = s2_aux.priors[0].mean()
         p0.append(np.ones_like(tcwv) * median) 
         p0.append(tcwv) 
 
@@ -1417,7 +1477,9 @@ def get_p0(s2_obs, l8_obs, s2_auxs, l8_auxs, s2_toas, aero_res, pix_res):
         median = np.nanmedian(aot)
         aot[~mask] = median 
 
-        
+        if not ((median>0) & (median<2.5)):
+            median = l8_aux.priors[0].mean()
+
         p0.append(np.ones_like(aot) * median) 
         p0.append(l8_aux.priors[1]) 
 
@@ -1496,7 +1558,7 @@ def get_correction_auxs(s2s, l8s, aero_res, dstSRS, outputBounds, dem, cams_dir,
         l8_auxs.append(l8_aux(np.cos(np.deg2rad(sza)), vzas, raas, priors, prior_uncs, ele))
     return s2_auxs, l8_auxs
 
-def do_correction(toa, aux, aot, tcwv, emus, file_header, band_names, dstSRS, outputBounds, pix_res, aero_res):
+def do_correction_l8(toa, aux, aot, tcwv, emus, file_header, band_names, dstSRS, outputBounds, pix_res, aero_res):
     
     X          = [aux.sza.ravel(), np.array(aux.vza).reshape(len(toa), -1), 
                   np.array(aux.raa).reshape(len(toa), -1), aot.ravel(), tcwv.ravel(), aux.priors[2].ravel(), aux.ele.ravel()]
@@ -1513,36 +1575,81 @@ def do_correction(toa, aux, aot, tcwv, emus, file_header, band_names, dstSRS, ou
     for _, fname in enumerate(fnames):
         ref = sur[_].reshape(toa[0].shape)
         ref = np.maximum((ref * 10000).astype(int), 0)
-        g   = array_to_raster(fname, ref,  dstSRS, outputBounds[0], outputBounds[1], pix_res, pix_res, gdal.GDT_UInt16)
+        g   = array_to_raster(fname, ref,  dstSRS, outputBounds[0], outputBounds[-1], pix_res, pix_res, gdal.GDT_UInt16)
         g.FlushCache()
     return sur, dH
 
-def do_one_s2(fs, cams_dir, dem, mcd43_dir, mcd43_vrt_dir):
+def do_correction_s2(toa, aux, aot, tcwv, emus, file_header, band_names, dstSRS, outputBounds, pix_res, aero_res):
+    
+    X          = [aux.sza.ravel(), np.array(aux.vza).reshape(len(toa), -1), 
+                  np.array(aux.raa).reshape(len(toa), -1), aot.ravel(), tcwv.ravel(), aux.priors[2].ravel(), aux.ele.ravel()]
+    xps        = predic_xps_all(X, emus[0])
+    xap_Hs, xbp_Hs, xcp_Hs, xap_dHs, xbp_dHs, xcp_dHs = xps
+    pix_ress = [60, 10, 10, 10, 20, 20, 20, 10, 20, 60, 60, 20, 20]
+    xmax, ymax = aux.sza.shape
+    surs = []
+    for _, band in enumerate(band_names):
+        toa_band = file_header + band + '.jp2'
+        pix_res = pix_ress[_]
+        data = gdal.Warp('', toa_band, format = 'MEM', outputBounds = outputBounds, 
+                             dstSRS = dstSRS, xRes = pix_res, yRes = pix_res, resampleAlg = gdal.GRA_NearestNeighbour).ReadAsArray()/10000.
+        selx, sely = np.where(np.ones(data.shape))
+        fname = file_header + band + '.tif' 
+        pts            = np.minimum((selx * pix_res / aero_res).astype(int), xmax-1), np.minimum((sely * pix_res / aero_res).astype(int), ymax-1)
+        inds, fine_ind = np.unique(pts, axis=1, return_inverse=True)
+        xap_H,  xbp_H,  xcp_H,  xap_dH,  xbp_dH,  xcp_dH  = xap_Hs[[_], fine_ind], xbp_Hs[[_], fine_ind], xcp_Hs[[_], fine_ind], \
+                                                            xap_dHs[[_], fine_ind], xbp_dHs[[_], fine_ind], xcp_dHs[[_], fine_ind]
+        sur, dH = cal_sur(xap_H,  xbp_H,  xcp_H,  xap_dH,  xbp_dH,  xcp_dH, data.reshape(1, -1))
+        ref = sur.reshape(data.shape)
+        ref = np.maximum((ref * 10000).astype(int), 0)
+        g   = array_to_raster(fname, ref,  dstSRS, outputBounds[0], outputBounds[-1], pix_res, pix_res, gdal.GDT_UInt16)
+        g.FlushCache()
+        surs.append(sur)
+    return surs, dH
+
+def do_one_s2(fs, cams_dir, dem, mcd43_dir, mcd43_vrt_dir, jasmin):
 
     logger = create_logger()
     logger.propagate = False
     aoi, middle_file, file_index, s2_fnames, l8_fnames = fs
-    s2_files, l8_files = pre_processing(s2_fnames, l8_fnames)
+    site = aoi.split('/')[-1].split('_location')[0]
+    f = np.load('/home/users/marcyin/acix_extend/sites_s2.npz', allow_pickle=True)
+    sites_s2 = np.array(f.f.sites_s2)
+    ind = sites_s2[:,0].tolist().index(site)
+    s2_tiles = sites_s2[ind][1]
+
     temporal_window = 1
     pix_res = 30
-    dstSRS, outputBounds = get_bounds(aoi, s2_files[0][2][2], pix_res)
-
+    if 'MSIL1C' in middle_file:
+        s2_files, l8_files = pre_processing([middle_file], [])
+        dstSRS, outputBounds = get_bounds(aoi, s2_files[0][2][2], pix_res)
+    else:
+        s2_files, l8_files = pre_processing([], [middle_file])
+        dstSRS, outputBounds = get_bounds(aoi, l8_files[0][2][2], pix_res)
     s2s, s2_times, l8s, l8_times = get_obs(s2_files, l8_files)
+    jasmin_s2s = find_on_jasmin(s2_tiles, (s2s + l8s)[0].obs_time, outputBounds, dstSRS)
+    s2_fs = [i.ID for i in jasmin_s2s]
+    if middle_file.split('/')[-1] in s2_fs:
+        ind = s2_fs.index(middle_file.split('/')[-1])
+        del jasmin_s2s[ind]
+    s2s += jasmin_s2s
+    s2_times = [i.obs_time for i in s2s]
     obs_times = np.unique(s2_times + l8_times).tolist()
-    vrt_dir = get_mcd43(aoi, obs_times, mcd43_dir, temporal_window = temporal_window , jasmin = True, vrt_dir=mcd43_vrt_dir)
+    vrt_dir = get_mcd43(aoi, obs_times, mcd43_dir, temporal_window = temporal_window , jasmin = jasmin, vrt_dir=mcd43_vrt_dir)
     logger.info('Reading TOAs.')
     s2_toas, s2_surs, s2_uncs, s2_clds = read_s2(s2s, pix_res, dstSRS, outputBounds, vrt_dir, temporal_window = temporal_window )
     l8_toas, l8_surs, l8_uncs, l8_clds = read_l8(l8s, pix_res, dstSRS, outputBounds, vrt_dir, temporal_window = temporal_window )
     logger.info('Redo cloud mask.')
     s2_clouds, s2_shadows,s2_changes, l8_clouds, l8_shadows, l8_changes = redo_cloud_shadow(s2_toas, l8_toas, s2_clds, l8_clds)
-
-    sur_x, sur_y = s2_surs[0][0].shape
+    if 'MSIL1C' in middle_file:
+        sur_x, sur_y = s2_surs[0][0].shape
+    else:
+        sur_x, sur_y = l8_surs[0][0].shape
     logger.info('Getting optimal PSF parameters.')  
     possible_x_y, struct, gaus, pointXs, pointYs = cal_psf_points(pix_res, sur_x, sur_y)
     s2_obs = do_s2_psf(s2s, s2_toas, s2_clouds, s2_shadows, s2_surs, possible_x_y, struct, gaus, pointXs, pointYs) 
     l8_obs = do_l8_psf(l8s, l8_toas, l8_clouds, l8_shadows, l8_surs, possible_x_y, struct, gaus, pointXs, pointYs)
 
-    
     ret = []
     old_shape = None
     logger.info('MultiGrid solver in process...')
@@ -1550,7 +1657,7 @@ def do_one_s2(fs, cams_dir, dem, mcd43_dir, mcd43_vrt_dir):
     s2_emus, l8_emus = load_emus(s2s, l8s, s2_bands, l8_bands)
     # [10000, 5000, 2500, 1000, 500, 240, 120]
     for _, aero_res in enumerate([ 10000, 5000, 2500, 1000, 500]):
-        logger.info(bcolors.BLUE + '++++++++++++++++++++++++++++++++++++++++++++++++'+bcolors.ENDC)
+        logger.info(bcolors.BLUE + '++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'+bcolors.ENDC)
         logger.info(bcolors.RED + 'Optimizing at resolution %d m' % (aero_res) + bcolors.ENDC)
         #aero_res = 250
         s2_auxs, l8_auxs = prepare_aux(s2s, l8s, aero_res, dstSRS, outputBounds, dem, cams_dir, s2_toas, pix_res, s2_bands, l8_bands)
@@ -1559,7 +1666,10 @@ def do_one_s2(fs, cams_dir, dem, mcd43_dir, mcd43_vrt_dir):
         stable_targets   = get_stable_targets(s2_changes + l8_changes, s2_clouds + l8_clouds, s2_shadows + l8_shadows, s2_toas + l8_toas)
         target_mask      = (obs_nums >= 0.5*total_obs ) & (np.array(stable_targets).astype(int).sum(axis=0)>1)
         masks = combine_mask(target_mask, stable_targets) 
-        new_shape = s2_auxs[0].ele.shape
+        if 'MSIL1C' in middle_file:
+            new_shape = s2_auxs[0].ele.shape
+        else:
+            new_shape = l8_auxs[0].ele.shape
         if _ ==0:
             p0 = get_p0(s2_obs, l8_obs, s2_auxs, l8_auxs, s2_toas, aero_res, pix_res)
             p0_aot  = p0.reshape(len(s2_obs) + len(l8_obs), 2, -1)[:,0].mean(axis=1)
@@ -1581,13 +1691,17 @@ def do_one_s2(fs, cams_dir, dem, mcd43_dir, mcd43_vrt_dir):
             #     p0 = get_p0(s2_obs, l8_obs, s2_auxs, l8_auxs, s2_toas, aero_res, pix_res)
 
             #p0[:len(s2_auxs),1] = np.array(tcwvs)
-        aero_shape = s2_auxs[0].sza.shape
-        toa_shape  = s2_toas[0][0].shape
+        if 'MSIL1C' in middle_file:
+            aero_shape = s2_auxs[0].sza.shape
+            toa_shape  = s2_toas[0][0].shape
+        else:
+            aero_shape = l8_auxs[0].sza.shape
+            toa_shape  = l8_toas[0][0].shape
         to_compute, fine_inds, coarse_inds, fine_xys = get_targets(s2_obs + l8_obs, masks, pix_res, aero_res, target_mask, aero_shape, toa_shape)
         bounds = get_ranges((total_obs, 2) + new_shape)
         psolve = optimize.minimize(cost_cost, p0.ravel(), jac=True, method='L-BFGS-B', bounds = bounds, 
                                 options={'disp': False, 'gtol': 1e-04, 'maxfun': 60, 'maxiter': 60, 'ftol': 1e-8, 'maxcor': 100}, 
-                                args =(s2_obs, l8_obs, s2_toas, s2_emus,s2_auxs, masks, l8_toas,l8_emus, l8_auxs, pix_res, aero_res, to_compute, fine_inds, coarse_inds, fine_xys, 10, 5, 0))
+                                args =(s2_obs, l8_obs, s2_toas, s2_emus,s2_auxs, masks, l8_toas,l8_emus, l8_auxs, pix_res, aero_res, aero_shape, to_compute, fine_inds, coarse_inds, fine_xys, 10, 5, -1.6))
         ret.append(psolve.x.reshape((total_obs, 2) + new_shape))
         old_shape = new_shape 
         
@@ -1608,7 +1722,24 @@ def do_one_s2(fs, cams_dir, dem, mcd43_dir, mcd43_vrt_dir):
         aux          = s2_auxs[0]
         cloud        = s2_clouds[file_index]
         shadow       = s2_shadows[file_index]
+        logger.info('Atmospheric parameters retried and saving into local files...')
+        cloud_shadow = cloud * 1. + shadow + 2.
+        posterious_aot, posterious_tcwv = optimized_paras[para_index]
+        
+        aot_fname, tcwv_fname = file_header + 'aot.tif', file_header + 'tcwv.tif'
+        cloud_fname           = file_header + 'cloud_shadow.tif'
+
+        aot_g   = array_to_raster(aot_fname,   posterious_aot,  dstSRS, outputBounds[0], outputBounds[-1],  aero_res, aero_res, gdal.GDT_Float32)
+        tcwv_g  = array_to_raster(tcwv_fname,  posterious_tcwv, dstSRS, outputBounds[0], outputBounds[-1],  aero_res, aero_res, gdal.GDT_Float32)
+        cloud_g = array_to_raster(cloud_fname, cloud_shadow,    dstSRS, outputBounds[0], outputBounds[-1],  aero_res, aero_res, gdal.GDT_Byte)
+        aot_g.FlushCache()                           
+        tcwv_g.FlushCache()                           
+        cloud_g.FlushCache()
+        
         band_names   = np.array(['B01', 'B02', 'B03','B04','B05' ,'B06', 'B07', 'B08','B8A', 'B09', 'B10', 'B11', 'B12'])
+        logger.info('Doing correction...')
+        sur, dH = do_correction_s2(toa, aux, posterious_aot, posterious_tcwv, emus, file_header, band_names, dstSRS, outputBounds, pix_res, aero_res)
+        
     else:
         para_index   = file_index + len(s2s)
         example_file = l8s[file_index].toa[0] 
@@ -1619,28 +1750,31 @@ def do_one_s2(fs, cams_dir, dem, mcd43_dir, mcd43_vrt_dir):
         aux          = l8_auxs[0]
         cloud        = l8_clouds[file_index]
         shadow       = l8_shadows[file_index]
+        logger.info('Atmospheric parameters retried and saving into local files...')
+        cloud_shadow = cloud * 1. + shadow + 2.
+        posterious_aot, posterious_tcwv = optimized_paras[para_index]
+        
+        aot_fname, tcwv_fname = file_header + 'aot.tif', file_header + 'tcwv.tif'
+        cloud_fname           = file_header + 'cloud_shadow.tif'
+
+        aot_g   = array_to_raster(aot_fname,   posterious_aot,  dstSRS, outputBounds[0], outputBounds[-1],  aero_res, aero_res, gdal.GDT_Float32)
+        tcwv_g  = array_to_raster(tcwv_fname,  posterious_tcwv, dstSRS, outputBounds[0], outputBounds[-1],  aero_res, aero_res, gdal.GDT_Float32)
+        cloud_g = array_to_raster(cloud_fname, cloud_shadow,    dstSRS, outputBounds[0], outputBounds[-1],  aero_res, aero_res, gdal.GDT_Byte)
+        aot_g.FlushCache()                           
+        tcwv_g.FlushCache()                           
+        cloud_g.FlushCache()
         band_names   = np.array(['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7'])
-
-    logger.info('Atmospheric parameters retried and saving into local files...')
-    cloud_shadow = cloud * 1. + shadow + 2.
-    posterious_aot, posterious_tcwv = optimized_paras[para_index]
+        logger.info('Doing correction...')
+        sur, dH = do_correction_l8(toa, aux, posterious_aot, posterious_tcwv, emus, file_header, band_names, dstSRS, outputBounds, pix_res, aero_res)
     
-    aot_fname, tcwv_fname = file_header + 'aot.tif', file_header + 'tcwv.tif'
-    cloud_fname           = file_header + 'cloud_shadow.tif'
-
-    aot_g   = array_to_raster(aot_fname,   posterious_aot,  dstSRS, outputBounds[0], outputBounds[1],  aero_res, aero_res, gdal.GDT_Float32)
-    tcwv_g  = array_to_raster(tcwv_fname,  posterious_tcwv, dstSRS, outputBounds[0], outputBounds[1],  aero_res, aero_res, gdal.GDT_Float32)
-    cloud_g = array_to_raster(cloud_fname, cloud_shadow,    dstSRS, outputBounds[0], outputBounds[1],  aero_res, aero_res, gdal.GDT_Byte)
-    aot_g.FlushCache()                           
-    tcwv_g.FlushCache()                           
-    cloud_g.FlushCache()
-
-    logger.info('Doing correction...')
-    sur, dH = do_correction(toa, aux, posterious_aot, posterious_tcwv, emus, file_header, band_names, dstSRS, outputBounds, pix_res, aero_res)
+    shutil.rmtree(vrt_dir)
+    for i in s2s + l8s:
+        ang_dir = os.path.dirname(os.path.dirname(i.sun_angs))
+        shutil.rmtree(ang_dir)
     logger.info('Done!')
     return ret[-1], sur, dH
 
-def array_to_raster(fname, array, dstSRS, xMin, yMin, xRes, yRes, dtype):    
+def array_to_raster(fname, array, dstSRS, xMin, yMax, xRes, yRes, dtype):    
     if array.ndim == 2:                             
         bands = 1                                   
     elif array.ndim ==3:                            
@@ -1648,13 +1782,15 @@ def array_to_raster(fname, array, dstSRS, xMin, yMin, xRes, yRes, dtype):
         t = np.argsort(array.shape)                 
         array = array.transpose(t)                  
     else:                                           
-        raise IOError('Only 2 or 3 D array is supported.')                                                                               
+        raise IOError('Only 2 or 3 D array is supported.')    
+    if os.path.exists(fname):
+        os.remove(fname)                                                              
     driver = gdal.GetDriverByName('GTiff')          
     ds = driver.Create(fname, array.shape[-1], array.shape[-2], bands, dtype)                       
     ds.SetProjection(dstSRS)             
     geotransform    = [0., 0., 0., 0., 0., 0.]
     geotransform[0] = xMin
-    geotransform[3] = yMin
+    geotransform[3] = yMax
     geotransform[1] =    xRes                                 
     geotransform[5] = -1*yRes                                                                                                          
     ds.SetGeoTransform(geotransform)                
@@ -1664,13 +1800,15 @@ def array_to_raster(fname, array, dstSRS, xMin, yMin, xRes, yRes, dtype):
     else:                                           
          ds.GetRasterBand(1).WriteArray(array)                                                                                                           
     ds                                              
-    return ds    
-acix_2        = '/data/nemesis/acix_2'
+    return ds      
+acix_2        = '/work/scratch/marcyin/acix_2/'
 sites = [i.split('/')[-2] for i in glob(acix_2 + '/S2s_ground_30/*/')] 
-cams_dir      = '/vsicurl/http://www2.geog.ucl.ac.uk/~ucfafyi/cams/'
-dem           = '/vsicurl/http://www2.geog.ucl.ac.uk/~ucfafyi/eles/global_dem.vrt'
-mcd43_dir     = '/home/ucfafyi/hep/MCD43/'
-mcd43_vrt_dir = '/home/ucfafyi/MCD43_VRT/'
-fss = find_ground_files(sites[1])
+
+
+cams_dir      = '/work/scratch/marcyin/CAMS/'
+dem           = '/work/scratch/marcyin/DEM/global_dem.vrt'
+mcd43_dir     = '/work/scratch/marcyin/MCD43/'
+mcd43_vrt_dir = '/work/scratch/marcyin/MCD43_VRT/'
+fss = find_around_files(sites[1])
 # for fs in fss[-5:]:
 #     ret = do_one_s2(fs, cams_dir, dem, mcd43_dir, mcd43_vrt_dir)

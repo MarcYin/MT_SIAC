@@ -5,6 +5,7 @@ import ogr
 import gdal
 import psutil
 import errno 
+import tempfile        
 import numpy as np
 from glob import glob
 from shutil import copyfile
@@ -232,7 +233,7 @@ def fill_bad(array, mask):
     array = griddata(valid, value, mesh, method='nearest')
     return array
 '''
-def resample_s2_angles(metafile):
+def resample_s2_angles(metafile, temp_angle = False, s2_angle_dir = '/home/users/marcyin/acix/s2_angle/'):
     #check the available rams and decide cores can be used
     #start multiprocessing
     bands    = ['B01', 'B02', 'B03','B04','B05' ,'B06', 'B07', 'B08','B8A', 'B09', 'B10', 'B11', 'B12'] #all bands
@@ -258,6 +259,19 @@ def resample_s2_angles(metafile):
         toa_refs = glob(s2_file_dir + '/*B??.jp2')
     else:
         raise IOError('Invalid metafile please use the default AWS or SCIHUB format.')
+    
+    if temp_angle:
+        s2_file_dir = tempfile.TemporaryDirectory(dir  =  s2_angle_dir).name + '/'
+        if not os.path.exists(s2_file_dir):
+            os.mkdir(s2_file_dir)
+        if not os.path.exists(s2_file_dir + '/ANG_DATA/'):
+            os.mkdir(s2_file_dir + '/ANG_DATA/')
+        if ('MTD' in metafile) & ('TL' in metafile) & ('xml' in metafile):
+            sun_ang_name = s2_file_dir + '/ANG_DATA/' + 'SAA_SZA.tif'   
+            view_ang_names = [s2_file_dir + '/ANG_DATA/' + 'VAA_VZA_%s.tif'%band for band in bands]
+        else:
+            sun_ang_name = s2_file_dir + '/angles/' + 'SAA_SZA.tif'
+            view_ang_names = [s2_file_dir + '/angles/' + 'VAA_VZA_%s.tif'%band for band in bands]
     gmls = sorted(gmls, key = lambda gml: bands.index('B' + gml.split('B')[-1][:2]))
     inds = [bands.index('B' + gml.split('B')[-1][:2]) for gml in gmls]
     toa_refs = sorted(toa_refs, key = lambda toa_ref: bands.index('B' + toa_ref.split('B')[-1][:2]))
@@ -278,11 +292,12 @@ def resample_s2_angles(metafile):
  
     # in dealing with lost angle gmls
     if (ret.sum()<13) & (ret.sum()>0):
+        inds = np.array(inds)[ret] # this is the good proccessed
         ret = np.zeros(13)
-        ret[inds] = 1
-        ret.astype(bool)
+        ret[inds] = 1 # recover them to the original bands
  
     if ret.sum()>0:
+        ret = ret.astype(bool)
         bad_angs       = view_ang_names[~ret]
         src_files      = view_ang_names[ret][abs(np.arange(13)[~ret][...,None] - np.arange(13)[ret]).argmin(axis=1)]
         for i in range(len(bad_angs)):

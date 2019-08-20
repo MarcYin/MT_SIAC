@@ -1,12 +1,15 @@
 #/usr/bin/env python 
 import os
 import gdal
+import tempfile 
 import warnings
 import subprocess
 import numpy as np
 from glob import glob
+from shutil import copyfile
 from functools import partial
 from multiprocessing import Pool
+from create_logger import create_logger
 
 warnings.filterwarnings("ignore")
 
@@ -61,11 +64,15 @@ def usgs_angle(band_angType, ang_file):
     return out_name
 
 
-def do_l8_angle(metafile):
+def do_l8_angle(metafile, temp_angle = False, l8_angle_dir = '/home/users/marcyin/acix/l8_angle/'):
     l8_file_dir = os.path.dirname(metafile)
     if not os.path.exists(l8_file_dir + '/angles'):
         os.mkdir(l8_file_dir + '/angles')
     header    = '_'.join(metafile.split('/')[-1].split('_')[:-1])
+    logger = create_logger()
+    logger.propagate = False
+    logger.info('Preprocessing for %s'%header)
+    logger.info('Doing per pixel angle resampling.')
     bs        = ['B1', 'B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'BQA']
     bands = [l8_file_dir + '/' + header + '_%s.TIF'%i for i in bs]
     toa_bands = bands[:-1]
@@ -74,7 +81,14 @@ def do_l8_angle(metafile):
     bands    = np.arange(1, 8)
     ang_types = ['BOTH', ] + ['SATELLITE',] * 7
     band_angTypes = zip(bands, ang_types)
-
+    if temp_angle:
+        l8_file_dir = tempfile.TemporaryDirectory(dir  = l8_angle_dir).name
+        if not os.path.exists(l8_file_dir):
+            os.mkdir(l8_file_dir)
+        if not os.path.exists(l8_file_dir + '/angles'):
+            os.mkdir(l8_file_dir + '/angles')
+        copyfile(ang_file, l8_file_dir + '/' + header + '_ANG.txt')
+        ang_file = l8_file_dir + '/' + header + '_ANG.txt'
     if len(glob(l8_file_dir + '/angles/*.TIF')) == 8:
         view_ang_names = glob(l8_file_dir + '/angles/*VAA_VZA*.TIF')
         view_ang_names = sorted(view_ang_names, key = lambda fname: fname.split('_VAA_VZA_')[-1].split('.TIF')[0])
@@ -100,6 +114,9 @@ def do_l8_angle(metafile):
         sun_ang_name = ang_names[-1]
 
     cloud_mask = gdal.Open(qa_band).ReadAsArray()
+    fill = (cloud_mask == 0).sum()
+    nonfill = (cloud_mask > 0).sum()
     cloud_mask = ~((cloud_mask  >= 2720) & ( cloud_mask <= 2732))
-
+    clean_pixel = (cloud_mask.sum() - fill) /  nonfill * 100.
+    logger.info('Clean pixel percentage: %.02f'%(clean_pixel))
     return sun_ang_name, view_ang_names, toa_bands, qa_band, cloud_mask, metafile
