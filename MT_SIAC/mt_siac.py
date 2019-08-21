@@ -116,10 +116,10 @@ def pre_processing(s2_fnames, l8_fnames):
     s2_files = []
     l8_files = []
     for s2_fname in s2_fnames:
-        ret = s2_pre_processing(s2_fname, temp_angle = True, s2_angle_dir = '/home/users/marcyin/acix/s2_angle/')    
+        ret = s2_pre_processing(s2_fname, temp_angle = True, s2_angle_dir = './')    
         s2_files.append(ret[0])
     for l8_fname in l8_fnames:
-        ret = l8_pre_processing(l8_fname, temp_angle = True, l8_angle_dir = '/home/users/marcyin/acix/l8_angle/')    
+        ret = l8_pre_processing(l8_fname, temp_angle = True, l8_angle_dir = './')    
         l8_files.append(ret[0])
     return s2_files, l8_files
 
@@ -712,7 +712,7 @@ def get_stable_targets(changes, clouds, shadows, toas):
     for i in range(len(changes)):
         toa    = toas[i]
         change = np.mean([abs(changes[i][-1]).data + abs(changes[i][-2].data)], axis=0)
-        stable_target = (change < 0.01) & (~clouds[i]) & (~shadows[i]) & (change / np.mean(toa[-2:].data, axis=0) < 0.1)
+        stable_target = (change < 0.025) & (~clouds[i]) & (~shadows[i]) & (change / np.mean(toa[-2:].data, axis=0) < 0.1)
         stable_targets.append(stable_target)
     return stable_targets
 
@@ -776,28 +776,33 @@ def prepare_aux(s2s, l8s, aero_res, dstSRS, outputBounds, dem, cams_dir, s2_toas
             raas.append(np.cos(np.deg2rad(raa)))                             
         s2_auxs.append(s2_aux(np.cos(np.deg2rad(sza)), vzas, raas, priors, prior_uncs, ele))
 
-    # if len(s2_auxs)>0:
-    #     tcwvs = get_starting_tcwvs(s2_auxs, s2_toas, aero_res, pix_res)
-    #     aots  = get_s2_aots(s2_auxs, s2_toas, aero_res, pix_res)                    
-    # else:
-    #     tcwvs = []   
-    #     aots  = []
-    # for _, s2_aux in enumerate(s2_auxs): 
+    if len(s2_auxs)>0:
+        tcwvs = get_starting_tcwvs(s2_auxs, s2_toas, aero_res, pix_res)
+        aots  = get_s2_aots(s2_auxs, s2_toas, aero_res, pix_res)                    
+    else:
+        tcwvs = []   
+        aots  = []
+    for _, s2_aux in enumerate(s2_auxs): 
                             
-    #     tcwv = tcwvs[_] 
-    #     aot  = aots[_]    
-    #     median = np.nanmedian(tcwv)
-    #     mask = (tcwv > 0) & (tcwv < 8)
-    #     tcwv[~mask] = median
-                            
-    #     priors        = s2_aux.priors
-    #     priors[0]     = np.ones_like(tcwv)*np.nanmedian(aot)
-    #     priors[1]     = tcwv    
-    #     prior_uncs    = s2_aux.prior_uncs
-    #     prior_uncs[0] = 0.2
-    #     prior_uncs[1] = 0.5
-    #     s2_aux        = s2_aux._replace(priors = priors, prior_uncs = prior_uncs )
-    #     s2_auxs[_]    = s2_aux 
+        tcwv = tcwvs[_] 
+        aot  = aots[_]    
+        median = np.nanmedian(tcwv)
+        mask = (tcwv > 0) & (tcwv < 8)
+        tcwv[~mask] = median
+        prior_uncs    = s2_aux.prior_uncs
+        priors        = s2_aux.priors
+        
+        if (median > 0) & (median<8):
+            priors[1]     = tcwv    
+            prior_uncs[1] = 0.1     
+
+        median = np.nanmedian(aot)
+        if (median > 0) & (median<2.5):
+            priors[0]     = np.ones_like(tcwv)*median
+            prior_uncs[0] = 0.05
+
+        s2_aux        = s2_aux._replace(priors = priors, prior_uncs = prior_uncs )
+        s2_auxs[_]    = s2_aux 
         
     l8_aux = namedtuple('l8_aux', 'sza vza raa priors prior_uncs ele')                     
     l8_auxs = [] 
@@ -896,64 +901,64 @@ def grid_conversion(array, new_shape):
 
 
 
-@jit(nopython=True)
-def object_jac(xap_H, xbp_H, xcp_H, xap_dH, xbp_dH, xcp_dH, toa, sur, band_weight):
+# @jit(nopython=True)
+# def object_jac(xap_H, xbp_H, xcp_H, xap_dH, xbp_dH, xcp_dH, toa, sur, band_weight):
 
-    band_weight = np.atleast_3d(band_weight).transpose(1,0,2)
-    toa     = np.atleast_3d(toa)
-    sur     = np.atleast_3d(sur)
-    boa_unc = 0.015
+#     band_weight = np.atleast_3d(band_weight).transpose(1,0,2)
+#     toa     = np.atleast_3d(toa)
+#     sur     = np.atleast_3d(sur)
+#     boa_unc = 0.015
 
-    y        = xap_H * toa - xbp_H
+#     y        = xap_H * toa - xbp_H
 
-    sur_ref  = y / (1 + xcp_H * y) 
+#     sur_ref  = y / (1 + xcp_H * y) 
 
-    diff     = sur_ref - sur
+#     diff     = sur_ref - sur
     
-    unc_2 = boa_unc**2
+#     unc_2 = boa_unc**2
 
-    full_J   = np.sum(0.5 * band_weight * (diff)**2 / unc_2, axis=0)
+#     full_J   = np.sum(0.5 * band_weight * (diff)**2 / unc_2, axis=0)
 
-    toa_xap_dH   = toa * xap_dH
-    toa_xap_H    = toa * xap_H
-    toa_xap_H_2  = toa_xap_H**2
-    xbp_H_xcp_dH = xbp_H * xcp_dH
-    xcp_H_2      = xcp_H**2
-    xbp_H_2      = xbp_H**2
+#     toa_xap_dH   = toa * xap_dH
+#     toa_xap_H    = toa * xap_H
+#     toa_xap_H_2  = toa_xap_H**2
+#     xbp_H_xcp_dH = xbp_H * xcp_dH
+#     xcp_H_2      = xcp_H**2
+#     xbp_H_2      = xbp_H**2
     
-    #ddH       = -1 * (-toa * xap_dH - 2 * toa * xap_H * xbp_H * xcp_dH + 
-    #                 toa**2 * xap_H**2 * xcp_dH + xbp_dH + xbp_H**2 * xcp_dH) / (toa * xap_H * xcp_H - xbp_H * xcp_H + 1)**2 
+#     #ddH       = -1 * (-toa * xap_dH - 2 * toa * xap_H * xbp_H * xcp_dH + 
+#     #                 toa**2 * xap_H**2 * xcp_dH + xbp_dH + xbp_H**2 * xcp_dH) / (toa * xap_H * xcp_H - xbp_H * xcp_H + 1)**2 
 
-    # -1 * (-toa * xap_dH - 2 * toa * xap_H * xbp_H * xcp_dH + toa**2 * xap_H**2 * xcp_dH + xbp_dH + xbp_H**2 * xcp_dH)
-    above = (toa_xap_dH + 2 * toa_xap_H * xbp_H_xcp_dH - toa_xap_H_2 * xcp_dH -  xbp_dH - xbp_H_xcp_dH * xbp_H)
+#     # -1 * (-toa * xap_dH - 2 * toa * xap_H * xbp_H * xcp_dH + toa**2 * xap_H**2 * xcp_dH + xbp_dH + xbp_H**2 * xcp_dH)
+#     above = (toa_xap_dH + 2 * toa_xap_H * xbp_H_xcp_dH - toa_xap_H_2 * xcp_dH -  xbp_dH - xbp_H_xcp_dH * xbp_H)
 
-    # (toa_xap_H * xcp_H - xbp_H * xcp_H + 1)**2
-    bottom = -2 * toa_xap_H * xbp_H * xcp_H_2 + toa_xap_H_2 * xcp_H_2 + 2 * toa_xap_H * xcp_H +  xbp_H_2 * xcp_H_2 - 2 * xbp_H * xcp_H + 1
+#     # (toa_xap_H * xcp_H - xbp_H * xcp_H + 1)**2
+#     bottom = -2 * toa_xap_H * xbp_H * xcp_H_2 + toa_xap_H_2 * xcp_H_2 + 2 * toa_xap_H * xcp_H +  xbp_H_2 * xcp_H_2 - 2 * xbp_H * xcp_H + 1
 
-    dH = above / bottom
-    #if not np.allclose(dH, ddH):
-    #    raise
-    full_dJ  = np.sum(band_weight * dH * diff / (unc_2), axis=0)
-    return full_J, full_dJ
+#     dH = above / bottom
+#     #if not np.allclose(dH, ddH):
+#     #    raise
+#     full_dJ  = np.sum(band_weight * dH * diff / (unc_2), axis=0)
+#     return full_J, full_dJ
 
-@jit(nopython=True)
-def remap_J_dJ(J, dJ, pts, aero_res, shape):
-    full_J  = np.zeros(shape)
-    full_dJ = np.zeros((2,) + shape)
-    pixs    = int(np.ceil(500 / aero_res))
-    for i in range(len(pts[0])):
-        pt = pts[:,i]
+# @jit(nopython=True)
+# def remap_J_dJ(J, dJ, pts, aero_res, shape):
+#     full_J  = np.zeros(shape)
+#     full_dJ = np.zeros((2,) + shape)
+#     pixs    = int(np.ceil(500 / aero_res))
+#     for i in range(len(pts[0])):
+#         pt = pts[:,i]
 
-        sub = full_J [   pt[0] : pt[0] + pixs, pt[1] : pt[1] + pixs] 
-        full_J       [   pt[0] : pt[0] + pixs, pt[1] : pt[1] + pixs] = np.ones_like(sub) * J[i]
+#         sub = full_J [   pt[0] : pt[0] + pixs, pt[1] : pt[1] + pixs] 
+#         full_J       [   pt[0] : pt[0] + pixs, pt[1] : pt[1] + pixs] = np.ones_like(sub) * J[i]
 
-        sub = full_dJ[0, pt[0] : pt[0] + pixs, pt[1] : pt[1] + pixs] 
-        full_dJ      [0, pt[0] : pt[0] + pixs, pt[1] : pt[1] + pixs] = np.ones_like(sub) * dJ[i][0]
+#         sub = full_dJ[0, pt[0] : pt[0] + pixs, pt[1] : pt[1] + pixs] 
+#         full_dJ      [0, pt[0] : pt[0] + pixs, pt[1] : pt[1] + pixs] = np.ones_like(sub) * dJ[i][0]
 
-        sub = full_dJ[1, pt[0] : pt[0] + pixs, pt[1] : pt[1] + pixs] 
-        full_dJ      [1, pt[0] : pt[0] + pixs, pt[1] : pt[1] + pixs] = np.ones_like(sub) * dJ[i][1]
+#         sub = full_dJ[1, pt[0] : pt[0] + pixs, pt[1] : pt[1] + pixs] 
+#         full_dJ      [1, pt[0] : pt[0] + pixs, pt[1] : pt[1] + pixs] = np.ones_like(sub) * dJ[i][1]
 
-    return full_J, full_dJ
+#     return full_J, full_dJ
 
 @jit(nopython=True)
 def prior_jac(pp, priors, prior_uncs):
@@ -990,13 +995,53 @@ def smoothness (x, sigma_model_2):
     #sigma_model_2 
     J  = np.zeros_like(x) 
     dJ = np.zeros_like(x)
+    up    = slice(0, -2), slice(1, -1)
+    down  = slice(1, -1), slice(0, -2)
+    left  = slice(1, -1), slice(2, None)
+    right = slice(2, None), slice(1, -1)
+    center = slice(1,-1), slice(1,-1)
+    #for sub in [x[up], x[down], x[left], x[right]]:
+    for slic in [up, down, left, right]:
+        diff       = x[slic] - x[center]
+        J [slic]   = J [slic] + 0.5 * diff ** 2 / sigma_model_2
+        dJ[slic]   = dJ[slic] + diff            / sigma_model_2 # this is essential..        
+        dJ[center] = dJ[center] - diff / sigma_model_2 # this is essential as well..
+    return J, dJ
 
-    for sub in [x[ :-2, 1:-1], x[1:-1, :-2], x[1:-1, 2: ], x[ 2:,1:-1]]:
-        diff          = sub - x[1:-1, 1:-1] 
-        J [1:-1,1:-1] = J [1:-1, 1:-1] + 0.5 * diff ** 2 / sigma_model_2
-        dJ[1:-1,1:-1] = dJ[1:-1, 1:-1] - diff            / sigma_model_2        
+# def smoothness(x, sigma_model_2):
+#     n = x.shape[0]
+#     DTD = np.eye(n)*2 - np.diag(np.ones(n),-1)[:n,:n] - np.diag(np.ones(n),1)[1:,1:]
+#     DTD[0,0]   = 1
+#     DTD[-1, -1] = 1
+#     J1  = 0.5 * x.dot(DTD).dot(x.T)
+#     dJ1 = DTD.dot(x.T)
+#     J2  = 0.5 * x.T.dot(DTD).dot(x)
+#     dJ2 = DTD.dot(x)
+#     return (J1 + J2)/sigma_model_2, (dJ1.T + dJ2)/sigma_model_2
+# def smoothness (x, sigma_model_2):
+#     #n = x.shape[0]
+#     #D = np.eye(n) - np.diag(np.ones(n),-1)[:n,:n]
+#     #D[0,0] = 0
+#     #D = np.matrix(D)
+#     #dif = np.array((D.T * D) * np.matrix(x)) + np.array((D.T * D) * np.matrix(x).T).T
+#     #mask = np.zeros_like(x).astype(bool)
+#     #mask[1:-1,1:-1] = True
+#     #dif[~mask] = 0
+#     #J = 0.5 * x * dif
+#     #return 2*J, 2*dif
+#     # Build up the 8-neighbours
+#     hood = np.array ( [  x[:-2, :-2], x[:-2, 1:-1], x[ :-2, 2: ], \
+#                         x[ 1:-1,:-2], x[1:-1, 2:], \
+#                         x[ 2:,:-2], x[ 2:, 1:-1], x[ 2:, 2:] ] )
+#     j_model = np.zeros_like(x) 
+#     der_j_model = np.zeros_like(x)
+#     for i in [1,3,4,6]:
+#         dif        = hood[i,:,:] - x[1:-1,1:-1] 
+#         #dif[~mask[1:-1,1:-1]] = 0
+#         j_model[1:-1,1:-1] = j_model[1:-1,1:-1] + 0.5 * dif **2/sigma_model_2
+#         der_j_model[1:-1,1:-1] = der_j_model[1:-1,1:-1] - dif/sigma_model_2
     
-    return J, 2 * dJ
+#     return j_model, 2 * der_j_model
 
 def smooth_cost(p, auxs, gamma1, gamma2):
     Js  = 0
@@ -1040,35 +1085,35 @@ def predic_xps_all(X, emus):
                        
     return np.array(xap_Hs), np.array(xbp_Hs), np.array(xcp_Hs), np.array(xap_dHs), np.array(xbp_dHs), np.array(xcp_dHs)
 
-@jit(nopython=True)
-def cal_sur(xap_H, xbp_H, xcp_H, xap_dH, xbp_dH, xcp_dH, toa):
+# @jit(nopython=True)
+# def cal_sur(xap_H, xbp_H, xcp_H, xap_dH, xbp_dH, xcp_dH, toa):
      
-    toa     = np.atleast_3d(toa)
-    y        = xap_H * toa - xbp_H
+#     toa     = np.atleast_3d(toa)
+#     y        = xap_H * toa - xbp_H
      
-    sur_ref  = y / (1 + xcp_H * y) 
+#     sur_ref  = y / (1 + xcp_H * y) 
      
-    toa_xap_dH   = toa * xap_dH
-    toa_xap_H    = toa * xap_H
-    toa_xap_H_2  = toa_xap_H**2
-    xbp_H_xcp_dH = xbp_H * xcp_dH
-    xcp_H_2      = xcp_H**2
-    xbp_H_2      = xbp_H**2
+#     toa_xap_dH   = toa * xap_dH
+#     toa_xap_H    = toa * xap_H
+#     toa_xap_H_2  = toa_xap_H**2
+#     xbp_H_xcp_dH = xbp_H * xcp_dH
+#     xcp_H_2      = xcp_H**2
+#     xbp_H_2      = xbp_H**2
      
-    #ddH       = -1 * (-toa * xap_dH - 2 * toa * xap_H * xbp_H * xcp_dH + 
-    #                 toa**2 * xap_H**2 * xcp_dH + xbp_dH + xbp_H**2 * xcp_dH) / (toa * xap_H * xcp_H - xbp_H * xcp_H + 1)**2 
+#     #ddH       = -1 * (-toa * xap_dH - 2 * toa * xap_H * xbp_H * xcp_dH + 
+#     #                 toa**2 * xap_H**2 * xcp_dH + xbp_dH + xbp_H**2 * xcp_dH) / (toa * xap_H * xcp_H - xbp_H * xcp_H + 1)**2 
      
-    # -1 * (-toa * xap_dH - 2 * toa * xap_H * xbp_H * xcp_dH + toa**2 * xap_H**2 * xcp_dH + xbp_dH + xbp_H**2 * xcp_dH)
-    above = (toa_xap_dH + 2 * toa_xap_H * xbp_H_xcp_dH - toa_xap_H_2 * xcp_dH -  xbp_dH - xbp_H_xcp_dH * xbp_H)
+#     # -1 * (-toa * xap_dH - 2 * toa * xap_H * xbp_H * xcp_dH + toa**2 * xap_H**2 * xcp_dH + xbp_dH + xbp_H**2 * xcp_dH)
+#     above = (toa_xap_dH + 2 * toa_xap_H * xbp_H_xcp_dH - toa_xap_H_2 * xcp_dH -  xbp_dH - xbp_H_xcp_dH * xbp_H)
      
-    # (toa_xap_H * xcp_H - xbp_H * xcp_H + 1)**2
-    bottom = -2 * toa_xap_H * xbp_H * xcp_H_2 + toa_xap_H_2 * xcp_H_2 + 2 * toa_xap_H * xcp_H +  xbp_H_2 * xcp_H_2 - 2 * xbp_H * xcp_H + 1
+#     # (toa_xap_H * xcp_H - xbp_H * xcp_H + 1)**2
+#     bottom = -2 * toa_xap_H * xbp_H * xcp_H_2 + toa_xap_H_2 * xcp_H_2 + 2 * toa_xap_H * xcp_H +  xbp_H_2 * xcp_H_2 - 2 * xbp_H * xcp_H + 1
 
-    dH = above / bottom
+#     dH = above / bottom
 
-    #full_dJ  = np.sum(dH, axis=0)
+#     #full_dJ  = np.sum(dH, axis=0)
 
-    return sur_ref, dH
+#     return sur_ref, dH
 
 
 
@@ -1175,23 +1220,81 @@ def get_targets(obs, masks, pix_res, aero_res, target_mask, aero_shape, toa_shap
     return to_compute, fine_inds, coarse_inds, fine_xys
      
 
-def get_xps(p, emus, auxs, to_compute):
+# def get_xps(p, emus, auxs, to_compute):
+#     xps    = []
+#     for _, aux in enumerate(auxs):                 
+#         emu = emus[_]                  
+#         size   = aux.sza.size                    
+#         shape  = aux.sza.shape                   
+#         pp     = p[_ * size * 2 : (_+1) * size * 2].reshape(2, shape[0], shape[1])
+#         pts    = to_compute[_]                                                 
+#         if pts.shape[1] > 0:
+#             ppts1, ppts2 = np.minimum(pts[0], pp[0].shape[0]-1), np.minimum(pts[1], pp[0].shape[1]-1)
+#             aot    = pp[0]               [   ppts1, ppts2] 
+#             tcwv   = pp[1]               [   ppts1, ppts2]
+#             sza    = np.array(aux.sza)   [   ppts1, ppts2] 
+#             vza    = np.array(aux.vza)   [:, ppts1, ppts2] 
+#             raa    = np.array(aux.raa)   [:, ppts1, ppts2] 
+#             ele    = np.array(aux.ele)   [   ppts1, ppts2]
+#             tco3   = np.array(aux.priors)[2, ppts1, ppts2]
+#             X      = [sza, vza, raa, aot, tcwv, tco3, ele]
+#             xps.append(predic_xps_all(X, emu))
+#         else:
+#             xps.append([np.zeros((7, 0, 1)), np.zeros((7, 0, 1)), np.zeros((7, 0, 1)), 
+#                         np.zeros((7, 0, 2)), np.zeros((7, 0, 2)), np.zeros((7, 0, 2)),])
+        
+#     return xps
+
+# def coarse_cost(xps, obs, coarse_inds, to_compute, band_weight, aero_shape, aero_res):
+#     Js  = 0
+#     dJs = []
+#     for _, ob in enumerate(obs):
+#         ind = coarse_inds[_]
+#         if ind.shape[0] > 0:
+#             pts =  to_compute[_][:,ind]
+#             xap_Hs, xbp_Hs, xcp_Hs, xap_dHs, xbp_dHs, xcp_dHs = xps[_]
+#             xap_H,  xbp_H,  xcp_H,  xap_dH,  xbp_dH,  xcp_dH  = xap_Hs[1:, ind], xbp_Hs[1:, ind], xcp_Hs[1:, ind], \
+#                                                                 xap_dHs[1:, ind], xbp_dHs[1:, ind], xcp_dHs[1:, ind]
+#             J, dJ  = object_jac(xap_H,  xbp_H,  xcp_H,  xap_dH,  xbp_dH,  xcp_dH, ob.conv_toa, ob.cors_sur, band_weight)
+#             J, dJ  = remap_J_dJ(J, dJ, pts, aero_res, aero_shape)
+               
+#             Js  += J
+#             dJs.append(dJ)
+#         else:
+#             Js += np.zeros(aero_shape)
+#             dJs.append(np.zeros((2,) + aero_shape))
+#     return Js, np.array(dJs)
+
+@jit(nopython=True)
+def remap_J_dJ_coarse(J, dJ, pts, shape):
+    full_J  = np.zeros(shape)
+    full_dJ = np.zeros((2,) + shape)
+    #pts = (ob.cors_pts * 500 / aero_res).astype(int)
+    for i in range(shape[0]):
+        for j in range(shape[1]):
+            mask = (pts[0] == i) & (pts[1] == j)
+            full_J[i,j]  = J[mask].sum()
+            full_dJ[0, i, j] = dJ[:,0][mask].sum()
+            full_dJ[1, i, j] = dJ[:,1][mask].sum()
+    return full_J, full_dJ
+
+def get_xps(p, emus, auxs):
     xps    = []
     for _, aux in enumerate(auxs):                 
         emu = emus[_]                  
         size   = aux.sza.size                    
         shape  = aux.sza.shape                   
         pp     = p[_ * size * 2 : (_+1) * size * 2].reshape(2, shape[0], shape[1])
-        pts    = to_compute[_]                                                 
-        if pts.shape[1] > 0:
-            ppts1, ppts2 = np.minimum(pts[0], pp[0].shape[0]-1), np.minimum(pts[1], pp[0].shape[1]-1)
-            aot    = pp[0]               [   ppts1, ppts2] 
-            tcwv   = pp[1]               [   ppts1, ppts2]
-            sza    = np.array(aux.sza)   [   ppts1, ppts2] 
-            vza    = np.array(aux.vza)   [:, ppts1, ppts2] 
-            raa    = np.array(aux.raa)   [:, ppts1, ppts2] 
-            ele    = np.array(aux.ele)   [   ppts1, ppts2]
-            tco3   = np.array(aux.priors)[2, ppts1, ppts2]
+        #pts    = to_compute[_]                                                 
+        if size > 0:
+            #ppts1, ppts2 = np.minimum(pts[0], pp[0].shape[0]-1), np.minimum(pts[1], pp[0].shape[1]-1)
+            aot    = pp[0].ravel()               #[   ppts1, ppts2] 
+            tcwv   = pp[1].ravel()               #[   ppts1, ppts2]
+            sza    = np.array(aux.sza).ravel()   #[   ppts1, ppts2] 
+            vza    = np.array(aux.vza).reshape(len(aux.vza), -1)  #[:, ppts1, ppts2] 
+            raa    = np.array(aux.raa).reshape(len(aux.raa), -1)   #[:, ppts1, ppts2] 
+            ele    = np.array(aux.ele).ravel()   #[   ppts1, ppts2]
+            tco3   = np.array(aux.priors)[2].ravel() #[2, ppts1, ppts2]
             X      = [sza, vza, raa, aot, tcwv, tco3, ele]
             xps.append(predic_xps_all(X, emu))
         else:
@@ -1200,19 +1303,62 @@ def get_xps(p, emus, auxs, to_compute):
         
     return xps
 
-def coarse_cost(xps, obs, coarse_inds, to_compute, band_weight, aero_shape, aero_res):
+@jit(nopython=True)
+def cal_sur(xap_H, xbp_H, xcp_H, xap_dH, xbp_dH, xcp_dH, toa):
+     
+    toa     = np.atleast_3d(toa)
+    y        = xap_H * toa - xbp_H
+     
+    sur_ref  = y / (1 + xcp_H * y) 
+     
+    toa_xap_dH   = toa * xap_dH
+    toa_xap_H    = toa * xap_H
+    toa_xap_H_2  = toa_xap_H**2
+    xbp_H_xcp_dH = xbp_H * xcp_dH
+    xcp_H_2      = xcp_H**2
+    xbp_H_2      = xbp_H**2
+     
+    #ddH       = -1 * (-toa * xap_dH - 2 * toa * xap_H * xbp_H * xcp_dH + 
+    #                 toa**2 * xap_H**2 * xcp_dH + xbp_dH + xbp_H**2 * xcp_dH) / (toa * xap_H * xcp_H - xbp_H * xcp_H + 1)**2 
+     
+    # -1 * (-toa * xap_dH - 2 * toa * xap_H * xbp_H * xcp_dH + toa**2 * xap_H**2 * xcp_dH + xbp_dH + xbp_H**2 * xcp_dH)
+    above = (toa_xap_dH + 2 * toa_xap_H * xbp_H_xcp_dH - toa_xap_H_2 * xcp_dH -  xbp_dH - xbp_H_xcp_dH * xbp_H)
+     
+    # (toa_xap_H * xcp_H - xbp_H * xcp_H + 1)**2
+    bottom = -2 * toa_xap_H * xbp_H * xcp_H_2 + toa_xap_H_2 * xcp_H_2 + 2 * toa_xap_H * xcp_H +  xbp_H_2 * xcp_H_2 - 2 * xbp_H * xcp_H + 1
+
+    dH = above / bottom
+
+    return sur_ref, dH
+
+@jit(nopython=True)
+def object_jac(xap_H, xbp_H, xcp_H, xap_dH, xbp_dH, xcp_dH, toa, sur, band_weight):
+
+    band_weight = np.atleast_3d(band_weight).transpose(1,0,2)
+    toa     = np.atleast_3d(toa)
+    sur     = np.atleast_3d(sur)
+    boa_unc = 0.05
+    sur_ref, dH = cal_sur(xap_H, xbp_H, xcp_H, xap_dH, xbp_dH, xcp_dH, toa)
+    diff     = sur_ref - sur
+    unc_2 = boa_unc**2
+    full_J   = np.sum(0.5 * band_weight * (diff)**2 / unc_2, axis=0)
+    full_dJ  = np.sum(band_weight * dH * diff / (unc_2), axis=0)
+    return full_J, full_dJ
+
+def coarse_cost(xps, obs, band_weight, aero_shape, aero_res):
+    # xps = get_xps(p, s2_emus + l8_emus, s2_auxs + l8_auxs, to_compute)
     Js  = 0
     dJs = []
     for _, ob in enumerate(obs):
-        ind = coarse_inds[_]
-        if ind.shape[0] > 0:
-            pts =  to_compute[_][:,ind]
+        pts = (ob.cors_pts * 500 / aero_res).astype(int)
+        if pts.size > 0:
             xap_Hs, xbp_Hs, xcp_Hs, xap_dHs, xbp_dHs, xcp_dHs = xps[_]
-            xap_H,  xbp_H,  xcp_H,  xap_dH,  xbp_dH,  xcp_dH  = xap_Hs[1:, ind], xbp_Hs[1:, ind], xcp_Hs[1:, ind], \
-                                                                xap_dHs[1:, ind], xbp_dHs[1:, ind], xcp_dHs[1:, ind]
-            J, dJ  = object_jac(xap_H,  xbp_H,  xcp_H,  xap_dH,  xbp_dH,  xcp_dH, ob.conv_toa, ob.cors_sur, band_weight)
-            J, dJ  = remap_J_dJ(J, dJ, pts, aero_res, aero_shape)
-               
+            xap_H,  xbp_H,  xcp_H,  xap_dH,  xbp_dH,  xcp_dH  = xap_Hs[1:].reshape((6,) + aero_shape + (1,)), xbp_Hs[1:].reshape((6,) + aero_shape + (1,)), xcp_Hs[1:].reshape((6,) + aero_shape + (1,)), \
+                                                                xap_dHs[1:].reshape((6,) + aero_shape + (2,)), xbp_dHs[1:].reshape((6,) + aero_shape + (2,)), xcp_dHs[1:].reshape((6,) + aero_shape + (2,))
+            
+            
+            J, dJ  = object_jac(xap_H[:, pts[0], pts[1]],  xbp_H[:, pts[0], pts[1]],  xcp_H[:, pts[0], pts[1]],  xap_dH[:, pts[0], pts[1]],  xbp_dH[:, pts[0], pts[1]],  xcp_dH[:, pts[0], pts[1]], ob.conv_toa, ob.cors_sur, band_weight)
+            J, dJ  = remap_J_dJ_coarse(J, dJ, pts, aero_shape)
             Js  += J
             dJs.append(dJ)
         else:
@@ -1220,25 +1366,54 @@ def coarse_cost(xps, obs, coarse_inds, to_compute, band_weight, aero_shape, aero
             dJs.append(np.zeros((2,) + aero_shape))
     return Js, np.array(dJs)
 
-def fine_cost(xps, toas, fine_inds, to_compute, band_weight, bands, fine_xys, aero_shape, aero_res, pix_res):
+# def fcoarse_cost(p, obs, coarse_inds, to_compute, band_weight, aero_shape, aero_res,s2_emus, l8_emus, s2_auxs, l8_auxs):
+#     # xps = get_xps(p, s2_emus + l8_emus, s2_auxs + l8_auxs, to_compute)
+#     xps = get_xps(p, s2_emus + l8_emus, s2_auxs + l8_auxs) 
+#     Js  = 0
+#     dJs = []
+#     for _, ob in enumerate(obs):
+#         pts = (ob.cors_pts * 500 / aero_res).astype(int)
+#         if pts.size > 0:
+#             xap_Hs, xbp_Hs, xcp_Hs, xap_dHs, xbp_dHs, xcp_dHs = xps[_]
+#             xap_H,  xbp_H,  xcp_H,  xap_dH,  xbp_dH,  xcp_dH  = xap_Hs[1:].reshape((6,) + aero_shape + (1,)), xbp_Hs[1:].reshape((6,) + aero_shape + (1,)), xcp_Hs[1:].reshape((6,) + aero_shape + (1,)), \
+#                                                                 xap_dHs[1:].reshape((6,) + aero_shape + (2,)), xbp_dHs[1:].reshape((6,) + aero_shape + (2,)), xcp_dHs[1:].reshape((6,) + aero_shape + (2,))
+            
+            
+#             J, dJ  = object_jac(xap_H[:, pts[0], pts[1]],  xbp_H[:, pts[0], pts[1]],  xcp_H[:, pts[0], pts[1]],  xap_dH[:, pts[0], pts[1]],  xbp_dH[:, pts[0], pts[1]],  xcp_dH[:, pts[0], pts[1]], ob.conv_toa, ob.cors_sur, band_weight)
+#             J, dJ  = remap_J_dJ_coarse(J, dJ, aero_res, aero_shape, ob)
+#             Js  += J.sum()
+#             dJs.append(dJ)
+#         else:
+#             Js += np.zeros(aero_shape)
+#             dJs.append(np.zeros((2,) + aero_shape))
+#     return Js.sum()
 
+
+
+def fine_cost_optimal(xps, toas, masks, band_weight, bands, aero_shape, aero_res, pix_res):
+    
     all_surs, all_surs_dH, valid_masks = [], [], []
-
+    
+    valid_num      = np.array(masks).sum(axis=0)
+    compute_mask   = valid_num>=len(toas)
     for _, toa in enumerate(toas):
-        fine_ind = fine_inds[_]
-
-        if fine_ind.shape[0]>0:
+        #fine_ind = fine_inds[_]
+        mask  = (~toa.mask).all(axis=0) &  compute_mask 
+        selx, sely = np.where(mask)
+        pts = np.array([selx, sely])
+        pts = (pts * pix_res / aero_res).astype(int)
+        if pts.size > 0:
             xap_Hs, xbp_Hs, xcp_Hs, xap_dHs, xbp_dHs, xcp_dHs = xps[_]
-            xap_H,  xbp_H,  xcp_H,  xap_dH,  xbp_dH,  xcp_dH  = xap_Hs[:, fine_ind], xbp_Hs[:, fine_ind], xcp_Hs[:, fine_ind], \
-                                                                xap_dHs[:, fine_ind], xbp_dHs[:, fine_ind], xcp_dHs[:, fine_ind]
+            xap_H,  xbp_H,  xcp_H,  xap_dH,  xbp_dH,  xcp_dH  = xap_Hs.reshape((7,) + aero_shape + (1,)), xbp_Hs.reshape((7,) + aero_shape + (1,)), xcp_Hs.reshape((7,) + aero_shape + (1,)), \
+                                                                xap_dHs.reshape((7,) + aero_shape + (2,)), xbp_dHs.reshape((7,) + aero_shape + (2,)), xcp_dHs.reshape((7,) + aero_shape + (2,))
             # pts = to_compute[_][:,fine_ind]
-            selx, sely = fine_xys[_]
             # surs = 0       
             # dHs  = 0               
             band = bands[_]
             # num_pixels = min(selx.shape[0], 100)
             #for i in range(num_pixels):
-            sur, dH = cal_sur(xap_H,  xbp_H,  xcp_H,  xap_dH,  xbp_dH,  xcp_dH, toa[band][:, selx, sely].data)
+            sur, dH  = cal_sur(xap_H[:, pts[0], pts[1]],  xbp_H[:, pts[0], pts[1]],  xcp_H[:, pts[0], pts[1]],  xap_dH[:, pts[0], pts[1]],  xbp_dH[:, pts[0], pts[1]],  xcp_dH[:, pts[0], pts[1]], toa[band][:, selx, sely].data)
+            #sur, dH = cal_sur(xap_H,  xbp_H,  xcp_H,  xap_dH,  xbp_dH,  xcp_dH, toa[band][:, selx, sely].data)
             #     surs += sur
             #     dHs  += dH
             # surs /= num_pixels
@@ -1276,27 +1451,39 @@ def fine_cost(xps, toas, fine_inds, to_compute, band_weight, bands, fine_xys, ae
             valid_mask[:, -1] = 0    
                                      
             valid_masks.append(valid_mask)       
+    
 
+    #selxs , selys  = np.where(compute_mask)
+    
     count_sum = np.sum(valid_masks, axis=0)[None, ..., None]
     mean_surs = np.sum(all_surs,    axis=0) / count_sum
-    mean_dHs  = np.sum(all_surs_dH, axis=0) / count_sum
+    mean_dHs  = np.sum(all_surs_dH, axis=0) / count_sum / len(toas)
+    
     # D[1/2*(a(x) - (a(x)+b(x)+g(x)+d(x))/4)^2 + 
-    #   1/2*(b(x) - (a(x)+b(x)+g(x)+d(x))/4)^2 + 
+    #   1/2*(b(x) - (a(x)+b(x)+g(x)+d(x))/4)^2 +  
     #   1/2*(g(x) - (a(x)+b(x)+g(x)+d(x))/4)^2 + 
     #   1/2*(d(x) - (a(x)+b(x)+g(x)+d(x))/4)^2, x]
     Js         = 0
     dJs        = []
     for i in range(len(all_surs)):
-        diff = all_surs[i] - mean_surs
+        # mask  = toas[i].mask
+        # selx, sely = np.where(mask.any(axis=0))
+        # pts = np.array([selx, sely])
+        # pts = (pts * pix_res / aero_res).astype(int)
+        diff = all_surs[i] - mean_surs 
         J    = 0.5 * diff**2
         dJ   = diff * (all_surs_dH[i] - mean_dHs)   
         J [:, valid_masks[i] == 0] = 0
         dJ[:, valid_masks[i] == 0] = 0
-        Js   += J * band_weight[...,None,None,None]
-        dJs.append(dJ * band_weight[...,None,None,None])
-    
-    Js  = Js.sum(axis=(0,3)) /0.01**2
-    dJs = np.array(dJs).sum(axis=1) / 0.01**2
+        J  =  J * band_weight[...,None, None, None]
+        dJ = dJ * band_weight[...,None, None, None]
+        #J, dJ = remap_J_dJ_coarse(J, dJ, pts, aero_shape)
+        Js  += J
+        dJs.append(dJ) 
+
+    unc_2 = 0.025**2
+    Js  = Js.sum(axis=(0,3)) / unc_2
+    dJs = np.array(dJs).sum(axis=1) / unc_2
 
     pix_area   = int(np.ceil(aero_res / pix_res)) 
     ratx, raty = int(aero_shape[0] * pix_area), int(aero_shape[1] * pix_area)
@@ -1311,6 +1498,224 @@ def fine_cost(xps, toas, fine_inds, to_compute, band_weight, bands, fine_xys, ae
     dJs  = temp.reshape(len(all_surs), aero_shape[0], pix_area, aero_shape[1], pix_area, 2).sum(axis = (2,4))
     
     return  Js, dJs.transpose(0, 3, 1, 2)
+
+
+def fine_cost(xps, toas, masks, band_weight, bands, aero_shape, aero_res, pix_res):
+    #xps = get_xps(p, s2_emus + l8_emus, s2_auxs + l8_auxs)
+    all_surs, all_surs_dH, valid_masks = [], [], []
+    
+    valid_num      = np.array(masks).sum(axis=0)
+    compute_mask   = valid_num>=len(toas)
+    
+    selx, sely = np.where(compute_mask)
+    selx, sely = np.minimum(selx, compute_mask.shape[0] - 1), np.minimum(sely, compute_mask.shape[1] - 1)
+    pix_area   = int(np.ceil(aero_res / pix_res)) 
+    
+    for _, toa in enumerate(toas):
+        #fine_ind = fine_inds[_]
+        band = bands[_]
+        toa_shape = toa[0].shape
+        #mask  = (~toa.mask).all(axis=0) &  compute_mask 
+        btoa = toa[band].data
+        
+        ratx, raty = int(aero_shape[0] * pix_area), int(aero_shape[1] * pix_area)
+        
+        temp = np.zeros((len(band), ratx, raty)) * np.nan
+
+        temp[:, selx, sely] = btoa[:, selx, sely]
+        
+        btoa = np.nanmean(temp.reshape(len(band), aero_shape[0], pix_area, aero_shape[1], pix_area), axis = (2,4))
+        
+        mask = np.isfinite(btoa).all(axis=0)
+
+        pts = np.array(np.where(mask))
+
+        if pts.size > 0:
+            xap_Hs, xbp_Hs, xcp_Hs, xap_dHs, xbp_dHs, xcp_dHs = xps[_]
+            xap_H,  xbp_H,  xcp_H,  xap_dH,  xbp_dH,  xcp_dH  = xap_Hs.reshape((7,) + aero_shape + (1,)), xbp_Hs.reshape((7,) + aero_shape + (1,)), xcp_Hs.reshape((7,) + aero_shape + (1,)), \
+                                                                xap_dHs.reshape((7,) + aero_shape + (2,)), xbp_dHs.reshape((7,) + aero_shape + (2,)), xcp_dHs.reshape((7,) + aero_shape + (2,))
+            # pts = to_compute[_][:,fine_ind]
+            # surs = 0       
+            # dHs  = 0               
+            
+            # num_pixels = min(selx.shape[0], 100)
+            #for i in range(num_pixels):
+            sur, dH  = cal_sur(xap_H[:, pts[0], pts[1]],  xbp_H[:, pts[0], pts[1]],  xcp_H[:, pts[0], pts[1]],  xap_dH[:, pts[0], pts[1]],  xbp_dH[:, pts[0], pts[1]],  xcp_dH[:, pts[0], pts[1]], btoa[:, pts[0], pts[1]])
+            #sur, dH = cal_sur(xap_H,  xbp_H,  xcp_H,  xap_dH,  xbp_dH,  xcp_dH, toa[band][:, selx, sely].data)
+            #     surs += sur
+            #     dHs  += dH
+            # surs /= num_pixels
+            # dHs  /= num_pixels
+        
+            # instead we create a full image
+
+            temp =  np.zeros((7,) + aero_shape + (1,))
+            temp[:, pts[0], pts[1]] = sur
+            all_surs.append(temp)   
+            
+            temp = np.zeros((7,) + aero_shape + (2,))
+            temp[:, pts[0], pts[1]] = dH
+            all_surs_dH.append(temp)
+            
+            valid_mask = np.zeros(aero_shape)
+            valid_mask[pts[0], pts[1]] = 1
+            
+            # valid_mask[0,  :] = 0
+            # valid_mask[:,  0] = 0
+            # valid_mask[-1, :] = 0
+            # valid_mask[:, -1] = 0
+
+            valid_masks.append(valid_mask)       
+        else:
+            temp = np.zeros((7,) + aero_shape + (1,))
+            all_surs.append(temp)    
+            temp = np.zeros((7,) + aero_shape + (2,))
+            all_surs_dH.append(temp) 
+            valid_mask = np.zeros(aero_shape)
+            # valid_mask[0,  :] = 0    
+            # valid_mask[:,  0] = 0    
+            # valid_mask[-1, :] = 0    
+            # valid_mask[:, -1] = 0    
+                                     
+            valid_masks.append(valid_mask)       
+    
+
+    #selxs , selys  = np.where(compute_mask)
+    
+    count_sum = np.sum(valid_masks, axis=0)[None, ..., None]
+    #mean_surs = np.sum(all_surs,    axis=0) / len(toas)
+    #mean_dHs  = np.nanmean(all_surs_dH, axis=0)
+    mean_surs = np.nanmean(all_surs, axis=0)
+    # D[1/2*(a(x) - (a(x)+b(x)+g(x)+d(x))/4)^2 + 
+    #   1/2*(b(x) - (a(x)+b(x)+g(x)+d(x))/4)^2 +  
+    #   1/2*(g(x) - (a(x)+b(x)+g(x)+d(x))/4)^2 + 
+    #   1/2*(d(x) - (a(x)+b(x)+g(x)+d(x))/4)^2, x]
+    Js         = 0
+    dJs        = []
+    for i in range(len(all_surs)):
+        # mask  = toas[i].mask
+        # selx, sely = np.where(mask.any(axis=0))
+        # pts = np.array([selx, sely])
+        # pts = (pts * pix_res / aero_res).astype(int)
+        diff = all_surs[i] - mean_surs 
+        J    = 0.5 * diff**2
+        dJ   = diff * all_surs_dH[i]   
+        J [:, valid_masks[i] == 0] = 0
+        dJ[:, valid_masks[i] == 0] = 0
+        J  =  J * band_weight[...,None, None, None]
+        dJ = dJ * band_weight[...,None, None, None]
+        #J, dJ = remap_J_dJ_coarse(J, dJ, pts, aero_shape)
+        Js  += J
+        dJs.append(dJ)      
+    unc_2 = 0.05**2
+    Js  = Js.sum(axis=(0,3)) / unc_2
+    dJs = np.array(dJs).sum(axis=1) / unc_2
+
+    # pix_area   = int(np.ceil(aero_res / pix_res)) 
+    # ratx, raty = int(aero_shape[0] * pix_area), int(aero_shape[1] * pix_area)
+    # temp = np.zeros((ratx, raty))                         
+    # # to guarentee  consistent shape   
+    # temp[:min(ratx, toa_shape[0]), :min(raty,toa_shape[1])] = Js[:min(ratx, toa_shape[0]), :min(raty,toa_shape[1])]
+    # Js  = temp.reshape(aero_shape[0], pix_area, aero_shape[1], pix_area).sum(axis = (1,3))
+    
+    # temp = np.zeros((len(all_surs), ratx, raty, 2))                          
+    # # to guarentee  consistent shape   
+    # temp[:, :min(ratx, toa_shape[0]), :min(raty,toa_shape[1]), :] = dJs[:, :min(ratx, toa_shape[0]), :min(raty,toa_shape[1]), :]
+    # dJs  = temp.reshape(len(all_surs), aero_shape[0], pix_area, aero_shape[1], pix_area, 2).sum(axis = (2,4))
+    
+    return  Js.sum(), dJs.transpose(0, 3, 1, 2)
+
+# def fine_cost(xps, toas, fine_inds, to_compute, band_weight, bands, fine_xys, aero_shape, aero_res, pix_res):
+
+#     all_surs, all_surs_dH, valid_masks = [], [], []
+
+#     for _, toa in enumerate(toas):
+#         fine_ind = fine_inds[_]
+
+#         if fine_ind.shape[0]>0:
+#             xap_Hs, xbp_Hs, xcp_Hs, xap_dHs, xbp_dHs, xcp_dHs = xps[_]
+#             xap_H,  xbp_H,  xcp_H,  xap_dH,  xbp_dH,  xcp_dH  = xap_Hs[:, fine_ind], xbp_Hs[:, fine_ind], xcp_Hs[:, fine_ind], \
+#                                                                 xap_dHs[:, fine_ind], xbp_dHs[:, fine_ind], xcp_dHs[:, fine_ind]
+#             # pts = to_compute[_][:,fine_ind]
+#             selx, sely = fine_xys[_]
+#             # surs = 0       
+#             # dHs  = 0               
+#             band = bands[_]
+#             # num_pixels = min(selx.shape[0], 100)
+#             #for i in range(num_pixels):
+#             sur, dH = cal_sur(xap_H,  xbp_H,  xcp_H,  xap_dH,  xbp_dH,  xcp_dH, toa[band][:, selx, sely].data)
+#             #     surs += sur
+#             #     dHs  += dH
+#             # surs /= num_pixels
+#             # dHs  /= num_pixels
+        
+#             # instead we create a full image
+#             toa_shape = toa[0].shape
+#             temp =  np.zeros((7,) + toa_shape + (1,))
+#             temp[:, selx, sely] = sur
+#             all_surs.append(temp)   
+            
+#             temp = np.zeros((7,) + toa_shape + (2,))
+#             temp[:, selx, sely] = dH
+#             all_surs_dH.append(temp)
+            
+#             valid_mask = np.zeros(toa_shape)
+#             valid_mask[selx, sely] = 1
+            
+#             valid_mask[0,  :] = 0
+#             valid_mask[:,  0] = 0
+#             valid_mask[-1, :] = 0
+#             valid_mask[:, -1] = 0
+
+#             valid_masks.append(valid_mask)       
+#         else:
+#             toa_shape = toa[0].shape
+#             temp = np.zeros((7,) + toa_shape + (1,))
+#             all_surs.append(temp)    
+#             temp = np.zeros((7,) + toa_shape + (2,))
+#             all_surs_dH.append(temp) 
+#             valid_mask = np.zeros(toa_shape)
+#             valid_mask[0,  :] = 0    
+#             valid_mask[:,  0] = 0    
+#             valid_mask[-1, :] = 0    
+#             valid_mask[:, -1] = 0    
+                                     
+#             valid_masks.append(valid_mask)       
+
+#     count_sum = np.sum(valid_masks, axis=0)[None, ..., None]
+#     mean_surs = np.sum(all_surs,    axis=0) / count_sum
+#     mean_dHs  = np.sum(all_surs_dH, axis=0) / count_sum
+#     # D[1/2*(a(x) - (a(x)+b(x)+g(x)+d(x))/4)^2 + 
+#     #   1/2*(b(x) - (a(x)+b(x)+g(x)+d(x))/4)^2 + 
+#     #   1/2*(g(x) - (a(x)+b(x)+g(x)+d(x))/4)^2 + 
+#     #   1/2*(d(x) - (a(x)+b(x)+g(x)+d(x))/4)^2, x]
+#     Js         = 0
+#     dJs        = []
+#     for i in range(len(all_surs)):
+#         diff = all_surs[i] - mean_surs
+#         J    = 0.5 * diff**2
+#         dJ   = diff * (all_surs_dH[i] - mean_dHs)   
+#         J [:, valid_masks[i] == 0] = 0
+#         dJ[:, valid_masks[i] == 0] = 0
+#         Js   += J * band_weight[...,None,None,None]
+#         dJs.append(dJ * band_weight[...,None,None,None])
+    
+#     Js  = Js.sum(axis=(0,3)) /0.025**2
+#     dJs = np.array(dJs).sum(axis=1) / 0.025**2
+
+#     pix_area   = int(np.ceil(aero_res / pix_res)) 
+#     ratx, raty = int(aero_shape[0] * pix_area), int(aero_shape[1] * pix_area)
+#     temp = np.zeros((ratx, raty))                         
+#     # to guarentee  consistent shape   
+#     temp[:min(ratx, toa_shape[0]), :min(raty,toa_shape[1])] = Js[:min(ratx, toa_shape[0]), :min(raty,toa_shape[1])]
+#     Js  = temp.reshape(aero_shape[0], pix_area, aero_shape[1], pix_area).sum(axis = (1,3))
+    
+#     temp = np.zeros((len(all_surs), ratx, raty, 2))                          
+#     # to guarentee  consistent shape   
+#     temp[:, :min(ratx, toa_shape[0]), :min(raty,toa_shape[1]), :] = dJs[:, :min(ratx, toa_shape[0]), :min(raty,toa_shape[1]), :]
+#     dJs  = temp.reshape(len(all_surs), aero_shape[0], pix_area, aero_shape[1], pix_area, 2).sum(axis = (2,4))
+    
+#     return  Js, dJs.transpose(0, 3, 1, 2)
 
 def get_starting_aots(obs, auxs, aero_res):
     iso_tnn = Two_NN(np_model_file= file_path + '/emus/Inverse_6S_AOT_iso.npz')
@@ -1408,7 +1813,7 @@ def get_starting_tcwvs(auxs, toas, aero_res, pix_res):
     return tcwvs
 
 
-def cost_cost(p, s2_obs, l8_obs, s2_toas, s2_emus, s2_auxs, masks, l8_toas,l8_emus, l8_auxs, pix_res, aero_res, aero_shape, to_compute, fine_inds, coarse_inds, fine_xys, gamma1, gamma2, alpha):
+def cost_cost(p, s2_obs, l8_obs, s2_toas, s2_emus, s2_auxs, masks, l8_toas,l8_emus, l8_auxs, pix_res, aero_res, aero_shape,  gamma1, gamma2, alpha):
     
     band_weight = np.array([0.442, 0.469, 0.555, 0.645, 0.859, 1.64 , 2.13 ])**alpha 
     band_weight = band_weight
@@ -1418,17 +1823,18 @@ def cost_cost(p, s2_obs, l8_obs, s2_toas, s2_emus, s2_auxs, masks, l8_toas,l8_em
     # toa_shape  = s2_toas[0][0].shape
     # to_compute, fine_inds, coarse_inds, fine_xys = get_targets(s2_obs + l8_obs, masks, pix_res, aero_res, target_mask, aero_shape, toa_shape)
 
-    xps = get_xps(p, s2_emus + l8_emus, s2_auxs + l8_auxs, to_compute)
+    xps = get_xps(p, s2_emus + l8_emus, s2_auxs + l8_auxs)
     smooth_J, smooth_dJ = smooth_cost(p, s2_auxs + l8_auxs, gamma1, gamma2)
     prior_J, prior_dJ   = prior_cost( p, s2_auxs + l8_auxs)
-    fine_J, fine_dJ     = fine_cost(  xps, s2_toas + l8_toas, fine_inds,   to_compute, band_weight, bands, fine_xys, aero_shape, aero_res, pix_res)
-    coarse_J, coarse_dJ = coarse_cost(xps, s2_obs  + l8_obs,  coarse_inds, to_compute, band_weight[1:], aero_shape, aero_res)
+    fine_J, fine_dJ     = fine_cost(  xps, s2_toas + l8_toas, masks, band_weight, bands, aero_shape, aero_res, pix_res)
+    coarse_J, coarse_dJ = coarse_cost(xps, s2_obs  + l8_obs,  band_weight[1:], aero_shape, aero_res)
     cost_mask = (fine_J==0) #& (coarse_J==0)
     prior_J [     cost_mask] = 0
     prior_dJ[:,:, cost_mask] = 0
-    J  = coarse_J  + fine_J + smooth_J   + prior_J
-    dJ = coarse_dJ + fine_dJ + smooth_dJ + prior_dJ
-    
+    J  = coarse_J   + smooth_J   + prior_J + fine_J
+    dJ = coarse_dJ  + smooth_dJ + prior_dJ + fine_dJ
+    #J  = fine_J + prior_J
+    #dJ = fine_dJ + prior_dJ
     return J.sum(), dJ.reshape(dJ.shape[0]*dJ.shape[1],-1).reshape(-1) 
 
 def get_p0(s2_obs, l8_obs, s2_auxs, l8_auxs, s2_toas, aero_res, pix_res):
@@ -1613,7 +2019,7 @@ def do_one_s2(fs, cams_dir, dem, mcd43_dir, mcd43_vrt_dir, jasmin):
     logger.propagate = False
     aoi, middle_file, file_index, s2_fnames, l8_fnames = fs
     site = aoi.split('/')[-1].split('_location')[0]
-    f = np.load('/home/users/marcyin/acix_extend/sites_s2.npz', allow_pickle=True)
+    f = np.load(file_path + '/sites_s2.npz', allow_pickle=True)
     sites_s2 = np.array(f.f.sites_s2)
     ind = sites_s2[:,0].tolist().index(site)
     s2_tiles = sites_s2[ind][1]
@@ -1621,6 +2027,8 @@ def do_one_s2(fs, cams_dir, dem, mcd43_dir, mcd43_vrt_dir, jasmin):
     temporal_window = 1
     pix_res = 30
     if 'MSIL1C' in middle_file:
+        aoi = aoi.replace('/work/scratch/marcyin', '/data/nemesis')
+        middle_file = middle_file.replace('/work/scratch/marcyin', '/data/nemesis')
         s2_files, l8_files = pre_processing([middle_file], [])
         dstSRS, outputBounds = get_bounds(aoi, s2_files[0][2][2], pix_res)
     else:
@@ -1632,10 +2040,10 @@ def do_one_s2(fs, cams_dir, dem, mcd43_dir, mcd43_vrt_dir, jasmin):
     if middle_file.split('/')[-1] in s2_fs:
         ind = s2_fs.index(middle_file.split('/')[-1])
         del jasmin_s2s[ind]
-    s2s += jasmin_s2s
+    s2s += jasmin_s2s[:3]
     s2_times = [i.obs_time for i in s2s]
     obs_times = np.unique(s2_times + l8_times).tolist()
-    vrt_dir = get_mcd43(aoi, obs_times, mcd43_dir, temporal_window = temporal_window , jasmin = jasmin, vrt_dir=mcd43_vrt_dir)
+    vrt_dir = get_mcd43(aoi, obs_times, mcd43_dir, temporal_window = temporal_window , jasmin = False, vrt_dir=mcd43_vrt_dir)
     logger.info('Reading TOAs.')
     s2_toas, s2_surs, s2_uncs, s2_clds = read_s2(s2s, pix_res, dstSRS, outputBounds, vrt_dir, temporal_window = temporal_window )
     l8_toas, l8_surs, l8_uncs, l8_clds = read_l8(l8s, pix_res, dstSRS, outputBounds, vrt_dir, temporal_window = temporal_window )
@@ -1656,7 +2064,7 @@ def do_one_s2(fs, cams_dir, dem, mcd43_dir, mcd43_vrt_dir, jasmin):
     s2_bands, l8_bands = [0, 1, 2, 3, 8, 11, 12], [0, 1, 2, 3, 4, 5, 6]
     s2_emus, l8_emus = load_emus(s2s, l8s, s2_bands, l8_bands)
     # [10000, 5000, 2500, 1000, 500, 240, 120]
-    for _, aero_res in enumerate([ 10000, 5000, 2500, 1000, 500]):
+    for _, aero_res in enumerate([4000, 2000, 1000, 500]):
         logger.info(bcolors.BLUE + '++++++++++++++++++++++++++++++++++++++++++++++++++++++++++'+bcolors.ENDC)
         logger.info(bcolors.RED + 'Optimizing at resolution %d m' % (aero_res) + bcolors.ENDC)
         #aero_res = 250
@@ -1697,11 +2105,11 @@ def do_one_s2(fs, cams_dir, dem, mcd43_dir, mcd43_vrt_dir, jasmin):
         else:
             aero_shape = l8_auxs[0].sza.shape
             toa_shape  = l8_toas[0][0].shape
-        to_compute, fine_inds, coarse_inds, fine_xys = get_targets(s2_obs + l8_obs, masks, pix_res, aero_res, target_mask, aero_shape, toa_shape)
+        #to_compute, fine_inds, coarse_inds, fine_xys = get_targets(s2_obs + l8_obs, masks, pix_res, aero_res, target_mask, aero_shape, toa_shape)
         bounds = get_ranges((total_obs, 2) + new_shape)
         psolve = optimize.minimize(cost_cost, p0.ravel(), jac=True, method='L-BFGS-B', bounds = bounds, 
-                                options={'disp': False, 'gtol': 1e-04, 'maxfun': 60, 'maxiter': 60, 'ftol': 1e-8, 'maxcor': 100}, 
-                                args =(s2_obs, l8_obs, s2_toas, s2_emus,s2_auxs, masks, l8_toas,l8_emus, l8_auxs, pix_res, aero_res, aero_shape, to_compute, fine_inds, coarse_inds, fine_xys, 10, 5, -1.6))
+                                options={'disp': 1, 'gtol': 1e-04, 'maxfun': 100, 'maxiter': 100, 'ftol': 1e-8, 'maxcor': 100}, 
+                                args =(s2_obs, l8_obs, s2_toas, s2_emus,s2_auxs, masks, l8_toas,l8_emus, l8_auxs, pix_res, aero_res, aero_shape,  30, 10, -1.6))
         ret.append(psolve.x.reshape((total_obs, 2) + new_shape))
         old_shape = new_shape 
         
@@ -1769,8 +2177,11 @@ def do_one_s2(fs, cams_dir, dem, mcd43_dir, mcd43_vrt_dir, jasmin):
     
     shutil.rmtree(vrt_dir)
     for i in s2s + l8s:
-        ang_dir = os.path.dirname(os.path.dirname(i.sun_angs))
-        shutil.rmtree(ang_dir)
+        try:
+            ang_dir = os.path.dirname(os.path.dirname(i.sun_angs))
+            shutil.rmtree(ang_dir)
+        except:
+            pass
     logger.info('Done!')
     return ret[-1], sur, dH
 
@@ -1809,6 +2220,12 @@ cams_dir      = '/work/scratch/marcyin/CAMS/'
 dem           = '/work/scratch/marcyin/DEM/global_dem.vrt'
 mcd43_dir     = '/work/scratch/marcyin/MCD43/'
 mcd43_vrt_dir = '/work/scratch/marcyin/MCD43_VRT/'
-fss = find_around_files(sites[1])
+acix_2        = '/data/nemesis/acix_2'
+cams_dir      = '/vsicurl/http://www2.geog.ucl.ac.uk/~ucfafyi/cams/'
+dem           = '/vsicurl/http://www2.geog.ucl.ac.uk/~ucfafyi/eles/global_dem.vrt'
+mcd43_dir     = '/home/ucfafyi/hep/MCD43/'
+mcd43_vrt_dir = '/home/ucfafyi/MCD43_VRT/'
+jasmin = True
+#fss = find_around_files(sites[1])
 # for fs in fss[-5:]:
 #     ret = do_one_s2(fs, cams_dir, dem, mcd43_dir, mcd43_vrt_dir)

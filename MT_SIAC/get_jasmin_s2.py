@@ -13,7 +13,7 @@ try:
     import cPickle as pkl
 except:
     import pickle as pkl
-file_path = '/home/users/marcyin/MT_SIAC/MT_SIAC/' #os.path.dirname(os.path.realpath(__file__))
+file_path = os.path.dirname(os.path.realpath(__file__))
 gc.disable()
 cl = pkl.load(open(file_path + '/data/sen2cloud_detector.pkl', 'rb'))
 gc.enable()
@@ -81,6 +81,7 @@ def find_on_jasmin(tiles, obs_time, outputBounds, dstSRS):
         for i in range(30):
             this_date = (obs_start + datetime.timedelta(i)).strftime('/%Y/%m/%d/')
             ff = glob('/neodc/sentinel2' + sat + '/data/L1C_MSI' +  this_date + '*%s*' %tile +  '.zip')
+            ff = glob('/data/nemesis/' + '*%s*'%((obs_start + datetime.timedelta(i)).strftime('%Y%m%d')) +'*%s*' %tile +  '.zip')
             if len(ff)>0:
                 for j in ff:
                     zipfname = os.path.realpath(j)
